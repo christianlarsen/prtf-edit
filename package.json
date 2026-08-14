@@ -1,0 +1,82 @@
+{
+  "name": "prtf-edit",
+  "displayName": "Printer File DDS edit",
+  "description": "Extension that helps you create and modify your printer file DDS on IBM i",
+  "author": {
+    "name": "Christian Larsen",
+    "url": "https://www.linkedin.com/in/christianlarsenvalverde/"
+  },
+  "publisher": "ChristianLarsen",
+  "version": "0.0.1",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/christianlarsen/prtf-edit"
+  },
+  "bugs": {
+    "url": "https://github.com/christianlarsen/prtf-edit/issues"
+  },
+  "homepage": "https://github.com/christianlarsen/prtf-edit#readme",
+  "keywords": [
+    "rpg",
+    "ibmi",
+    "rpgle",
+    "sqlrpgle",
+    "as400",
+    "dds",
+    "printer",
+    "prtf"
+  ],
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "license": "MIT",
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "preview": true,
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "prtf-edit",
+          "title": "PRTF Structure",
+          "icon": "assets/prtf_extension_icon_activity.svg",
+          "when": "true"
+        }
+      ]
+    },
+    "views": {
+      "prtf-edit": [
+        {
+          "id": "prtf-edit.schema-view",
+          "name": "Definition",
+          "when": "true"
+        }
+      ]
+    },
+    "commands": []
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^20.19.11",
+    "@types/vscode": "^1.75.0",
+    "@typescript-eslint/eslint-plugin": "^8.31.1",
+    "@typescript-eslint/parser": "^8.31.1",
+    "@vscode/test-cli": "^0.0.10",
+    "@vscode/test-electron": "^2.5.2",
+    "eslint": "^9.25.1",
+    "mocha": "^11.7.2",
+    "typescript": "^5.8.3"
+  }
+}
