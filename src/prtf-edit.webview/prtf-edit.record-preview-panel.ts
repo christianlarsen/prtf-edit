@@ -37,6 +37,14 @@ interface PageItem {
 	 * rewrite, so dragging it only moves its Position (column); the row snaps back to where it
 	 * already was. */
 	flowPositioned?: boolean;
+	/** True when the field/constant carries the HIGHLIGHT keyword (or its owning record does —
+	 * HIGHLIGHT is valid at either level, and applies to every field in the record when set at the
+	 * record level) — rendered bold. */
+	bold?: boolean;
+	/** CSS color from a field's COLOR(color-name) keyword — the named-color form only; the RGB/
+	 * CMYK/CIELAB/Highlight color models are device-calibrated values with no simple mapping, so
+	 * those render in the default color (see getColor). */
+	color?: string;
 	/** True for an item from the overlaid (background) record, not the one being previewed —
 	 * dimmed and non-interactive, a read-only reference layer to check against while editing the
 	 * active record (mirrors dspf-edit's own Overlay control). */
@@ -173,6 +181,37 @@ function hasEndPage(attributes: PrtfAttribute[] | undefined): boolean {
 };
 
 /**
+ * Maps COLOR's named-color parameter (see "COLOR (Color) keyword in printer files" in the DDS
+ * reference) to a legible CSS color for the preview. YLW renders as a darker gold rather than
+ * pure yellow — real yellow ink is barely legible on white paper too, and an unreadable preview
+ * isn't a useful one. The RGB/CMYK/CIELAB/Highlight color models are device-calibrated numeric
+ * values with no simple mapping, so a field using one of those just renders in the default color,
+ * same scope boundary as EDTCDE's user-defined edit codes (5-9).
+ */
+const COLOR_NAMES: Record<string, string> = {
+	BLK: '#000000', BLU: '#0000ee', BRN: '#8b4513', GRN: '#008000',
+	PNK: '#ff69b4', RED: '#e00000', TRQ: '#00a0a0', YLW: '#b8960c',
+};
+
+function getColor(attributes: PrtfAttribute[] | undefined): string | undefined {
+	for (const attr of attributes ?? []) {
+		const match = attr.value.match(/\bCOLOR\(\s*([A-Z]{3})\s*\)/i);
+		if (match) {return COLOR_NAMES[match[1].toUpperCase()];};
+	};
+	return undefined;
+};
+
+/**
+ * True when the field/constant carries HIGHLIGHT, or its owning record does — HIGHLIGHT is valid
+ * at either level (see "HIGHLIGHT (Highlight) keyword in printer files"), and a record-level one
+ * applies to every field in that record.
+ */
+function hasHighlight(itemAttributes: PrtfAttribute[] | undefined, recordAttributes: PrtfAttribute[] | undefined): boolean {
+	const carries = (attrs: PrtfAttribute[] | undefined) => (attrs ?? []).some(attr => /\bHIGHLIGHT\b/i.test(attr.value));
+	return carries(itemAttributes) || carries(recordAttributes);
+};
+
+/**
  * Builds the page's character grid: a `rows`-length array of `cols`-wide strings, with each
  * item's text written starting at its (row, col) — 1-based, as coded in DDS — clipped at the page
  * boundary rather than wrapping, so the preview honestly shows what does and doesn't fit at the
@@ -218,7 +257,7 @@ export function buildOwnerGrid(rows: number, cols: number, items: PageItem[]): (
 /** Builds one field's PageItem — shared by the single-record and composed-sequence collectors.
  * `rowOverride`/`forceFlowFlag` let a composed render supply a row from its own running
  * simulation instead of the field's own (isolated-record) resolved `row`. */
-function buildFieldPageItem(field: PrtfField, rowOverride?: number, forceFlowFlag?: boolean): PageItem | undefined {
+function buildFieldPageItem(field: PrtfField, rowOverride?: number, forceFlowFlag?: boolean, recordAttributes?: PrtfAttribute[]): PageItem | undefined {
 	const row = rowOverride ?? field.row;
 	if (row === undefined || field.column === undefined) {return undefined;};
 
@@ -226,15 +265,23 @@ function buildFieldPageItem(field: PrtfField, rowOverride?: number, forceFlowFla
 	const flowPositioned = forceFlowFlag ?? (field.positionSource === 'flow');
 	const title = [textDescription ? `${field.name} — ${textDescription}` : field.name, flowPositioned ? '(flow-positioned; drag moves column only)' : '']
 		.filter(Boolean).join(' ');
-	return { row, col: field.column, text: fieldPlaceholderText(field), title, lineIndex: field.lineIndex, underline: hasUnderline(field.attributes), flowPositioned };
+	return {
+		row, col: field.column, text: fieldPlaceholderText(field), title, lineIndex: field.lineIndex,
+		underline: hasUnderline(field.attributes), flowPositioned,
+		bold: hasHighlight(field.attributes, recordAttributes), color: getColor(field.attributes)
+	};
 };
 
 /** Builds one constant's PageItem — see buildFieldPageItem. */
-function buildConstantPageItem(constant: PrtfConstant, rowOverride?: number, forceFlowFlag?: boolean): PageItem {
+function buildConstantPageItem(constant: PrtfConstant, rowOverride?: number, forceFlowFlag?: boolean, recordAttributes?: PrtfAttribute[]): PageItem {
 	const row = rowOverride ?? constant.row;
 	const flowPositioned = forceFlowFlag ?? (constant.positionSource === 'flow');
 	const title = [findTextKeyword(constant.attributes), flowPositioned ? '(flow-positioned; drag moves column only)' : ''].filter(Boolean).join(' ') || undefined;
-	return { row, col: constant.column, text: constantPlaceholderText(constant), title, lineIndex: constant.lineIndex, underline: hasUnderline(constant.attributes), flowPositioned };
+	return {
+		row, col: constant.column, text: constantPlaceholderText(constant), title, lineIndex: constant.lineIndex,
+		underline: hasUnderline(constant.attributes), flowPositioned,
+		bold: hasHighlight(constant.attributes, recordAttributes), color: getColor(constant.attributes)
+	};
 };
 
 /**
@@ -245,13 +292,14 @@ function buildConstantPageItem(constant: PrtfConstant, rowOverride?: number, for
  */
 export function collectPageItems(elements: PrtfElement[], recordName: string): PageItem[] {
 	const items: PageItem[] = [];
+	const recordAttributes = elements.find((el): el is PrtfRecord => el.kind === 'record' && el.name === recordName)?.attributes;
 
 	for (const el of elements) {
 		if (el.kind === 'field' && el.recordname === recordName && !el.programToSystem) {
-			const item = buildFieldPageItem(el);
+			const item = buildFieldPageItem(el, undefined, undefined, recordAttributes);
 			if (item) {items.push(item);};
 		} else if (el.kind === 'constant' && el.recordname === recordName) {
-			items.push(buildConstantPageItem(el));
+			items.push(buildConstantPageItem(el, undefined, undefined, recordAttributes));
 		};
 	};
 
@@ -313,10 +361,10 @@ function positionRecordEntry(
 			if (row === undefined) {continue;};
 			if (item.kind === 'field') {
 				if (item.programToSystem) {continue;};
-				const built = buildFieldPageItem(item, row, true);
+				const built = buildFieldPageItem(item, row, true, record.attributes);
 				if (built) {items.push(tag(built));};
 			} else {
-				items.push(tag(buildConstantPageItem(item, row, true)));
+				items.push(tag(buildConstantPageItem(item, row, true, record.attributes)));
 			};
 		};
 		currentLine = endLine;
@@ -324,7 +372,7 @@ function positionRecordEntry(
 		for (const item of recordItems) {
 			if (item.kind === 'field') {
 				if (item.programToSystem) {continue;};
-				const built = buildFieldPageItem(item);
+				const built = buildFieldPageItem(item, undefined, undefined, record.attributes);
 				if (built) {
 					items.push(tag(built));
 					// +1: the default handoff is the line *after* the highest one this record
@@ -332,7 +380,7 @@ function positionRecordEntry(
 					currentLine = Math.max(currentLine, built.row + 1);
 				};
 			} else {
-				const built = buildConstantPageItem(item);
+				const built = buildConstantPageItem(item, undefined, undefined, record.attributes);
 				items.push(tag(built));
 				currentLine = Math.max(currentLine, built.row + 1);
 			};
@@ -477,8 +525,14 @@ function renderLineHtml(charLine: string, ownerLine: (number | undefined)[], ite
 			const titleAttr = item.title ? ` title="${escapeHtml(item.title)}"` : '';
 			const flowAttr = item.flowPositioned ? ' data-flow="1"' : '';
 			const lineAttr = item.overlay ? '' : ` data-line="${item.lineIndex}"`;
-			const cssClass = ['pf-item', item.underline ? 'pf-underline' : '', item.overlay ? 'pf-overlay' : ''].filter(Boolean).join(' ');
-			html += `<span class="${cssClass}"${lineAttr}${flowAttr}${titleAttr}>${segment}</span>`;
+			const styleAttr = item.color ? ` style="color:${item.color}"` : '';
+			const cssClass = [
+				'pf-item',
+				item.underline ? 'pf-underline' : '',
+				item.bold ? 'pf-bold' : '',
+				item.overlay ? 'pf-overlay' : ''
+			].filter(Boolean).join(' ');
+			html += `<span class="${cssClass}"${lineAttr}${flowAttr}${titleAttr}${styleAttr}>${segment}</span>`;
 		} else {
 			html += segment;
 		};
@@ -799,6 +853,9 @@ export class RecordPreviewPanel {
 	.pf-underline {
 		text-decoration: underline;
 	}
+	.pf-bold {
+		font-weight: bold;
+	}
 	.pf-overlay {
 		opacity: 0.4;
 		cursor: default;
@@ -857,7 +914,10 @@ export class RecordPreviewPanel {
 	<div class="note">Fields show as O (character/date/time) or 6 (numeric) — hover a field to see
 	its name (and its TEXT() description, if any). A numeric field with EDTCDE shows its edited
 	worst-case width instead (9s with commas/decimal point/sign, like RLU's own design view), and
-	UNDERLINE renders as underline. Click a field or constant to jump to it in the source; drag it
+	UNDERLINE renders as underline, HIGHLIGHT (field- or record-level) as bold, and COLOR's named
+	colors (BLK/BLU/BRN/GRN/PNK/RED/TRQ/YLW) in that color — the RGB/CMYK/CIELAB/Highlight color
+	models aren't simple enough to map here, so those show in the default color. Click a field or
+	constant to jump to it in the source; drag it
 	to reposition (rewrites only its Line/Position columns — name, type and keywords are
 	untouched). "+ Constant" or "+ Field", then click the page, to add a new one there. Moving the
 	cursor in the source highlights it back here.

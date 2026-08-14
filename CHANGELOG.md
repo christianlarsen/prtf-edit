@@ -189,3 +189,29 @@
   total whose fixed row falls past the overflow line correctly lands on the next page instead of
   being clipped; three repeats of a record carrying `ENDPAGE` each land on their own page
   regardless of a generous overflow threshold.
+- Added long-constant support to "+ Constant" (`prtf-edit.add-constant`): text that doesn't fit
+  in one line's 36-column keyword zone (columns 45-80) now splits across DDS's own
+  keyword-continuation convention (a trailing '-') instead of being rejected outright. New
+  `buildConstantLines` (replacing the old single-line `buildConstantLine`) mirrors exactly what
+  the parser's own `extractMultiLineConstant` already reads back, so an added long constant
+  round-trips correctly; only the first line carries the Line/Position entry, every continuation
+  line is a bare keyword-only line (form-type `A` in column 6, same as any other multi-line DDS
+  attribute in this codebase). Caught and fixed a bug during validation: continuation lines were
+  initially built with column 6 left blank instead of `A`, harmless to this project's own lenient
+  parser (which doesn't check it) but not a real DDS line. Validated: a short constant renders
+  identically to before (single line, no dash); text just over/under the 36-character boundary;
+  a genuinely long constant with an embedded quote spanning 5 lines; a 120-character constant
+  spanning 4 — all round-trip through the parser to the exact original text, row, and column.
+- Rendered `COLOR` and `HIGHLIGHT` in the preview, alongside the existing `UNDERLINE`. `COLOR`'s
+  named-color form (BLK/BLU/BRN/GRN/PNK/RED/TRQ/YLW) maps to a legible CSS color — YLW renders as
+  a darker gold rather than pure yellow, since real yellow ink is about as hard to read on white
+  paper and an unreadable preview isn't useful; the RGB/CMYK/CIELAB/Highlight color models are
+  device-calibrated numeric values with no simple mapping, so those fall back to the default
+  color, the same scope boundary already drawn around EDTCDE's user-defined edit codes. `HIGHLIGHT`
+  renders bold, and — unlike `UNDERLINE`/`COLOR`, which are field-only — is honored at both record
+  and field level (a record-level `HIGHLIGHT` applies to every field in that record, per the DDS
+  reference), so `buildFieldPageItem`/`buildConstantPageItem` now take the owning record's
+  attributes as well as the item's own. Validated against a record combining record-level
+  `HIGHLIGHT` with a field-level `COLOR(RED)`, a field with neither of its own (inheriting bold
+  from the record only), and a constant with its own `COLOR(BLU)` and `HIGHLIGHT` — all three
+  resolved bold/color correctly.

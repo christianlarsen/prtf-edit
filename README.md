@@ -43,9 +43,9 @@ painful.
 - [x] Fase 5 — Preview, editing: drag a field/constant in the preview to reposition it, rewriting
       only its Line/Position columns (39-44) — name, type, length and keywords are left untouched.
       A toolbar "+ Constant" button arms a placing mode (crosshair cursor); the next click on the
-      page adds a new constant there (prompts for the text, single-line only — longer text needs
-      DDS's line-continuation convention, not yet supported) — same click-to-place mechanism
-      dspf-edit's own preview uses. A "+ Field" button reuses the identical mechanism, chaining
+      page adds a new constant there (prompts for the text, splitting it across DDS's own
+      keyword-continuation convention — a trailing '-' — when it doesn't fit one line's 36-column
+      keyword zone) — same click-to-place mechanism dspf-edit's own preview uses. A "+ Field" button reuses the identical mechanism, chaining
       prompts for name (validated, no duplicates), type (A/S/L/T/Z — the v1 keyword scope), and
       length/decimals where applicable (blank/derived for L/T/Z, per DATFMT/TIMFMT defaults).
       Diagnostics (Problems panel): flags a record format that mixes explicit Line numbers with a
