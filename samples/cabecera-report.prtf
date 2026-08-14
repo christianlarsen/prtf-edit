@@ -1,0 +1,33 @@
+     A*
+     A* Ejemplo válido de DDS para PRTF: modo Line/Position explícito puro
+     A* (sin SPACEA/SPACEB/SKIPA/SKIPB a nivel record ni field), con campos,
+     A* constantes y palabras clave (TEXT, UNDERLINE, EDTCDE, DATE, PAGNBR).
+     A* Confirmado sin errores de compilación (CPD5238/CPD7826/CPD7860).
+     A*
+     A          R CABECERA
+     A            EMPRESA       30A  O  1  1
+     A                                      TEXT('Nombre de la empresa')
+     A            TITULO        40A  O  2  1
+     A                                      UNDERLINE
+     A                                  4  1DATE(*SYS *YY) EDTCDE(Y)
+     A                                  4 70'Pagina:'
+     A                                    +1PAGNBR
+     A                                  6  1'CODIGO'
+     A                                      UNDERLINE
+     A                                  6 12'DESCRIPCION'
+     A                                      UNDERLINE
+     A                                  6 55'CANTIDAD'
+     A                                      UNDERLINE
+     A                                  6 67'IMPORTE'
+     A                                      UNDERLINE
+     A                                  7  1'----------------------------------'
+     A            CODIGO        10A  O  8  1
+     A                                      TEXT('Codigo de articulo')
+     A            DESCRIPCIO    30A  O  8 12
+     A            CANTIDAD       7S 2O  8 55
+     A                                      EDTCDE(J)
+     A            IMPORTE        9S 2O  8 67
+     A                                      EDTCDE(J *)
+     A                                 10 55'TOTAL:'
+     A            IMPTOTAL       9S 2O 10 67
+     A                                      EDTCDE(J *)

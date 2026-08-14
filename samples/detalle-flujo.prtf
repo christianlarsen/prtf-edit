@@ -1,0 +1,16 @@
+     A*
+     A* Ejemplo de modo flujo (SPACEB/SPACEA/SKIPB/SKIPA — sin Line explícito):
+     A* patrón típico de una línea de detalle que se repite, avanzando una
+     A* fila por cada escritura del record vía SPACEA(1) a nivel record.
+     A* Los campos se encadenan por columna con Position "+n" (sin Line).
+     A* IMPORTE usa "+4" en vez de "+2" a propósito: "+n" cuenta desde el final
+     A* del campo CANTIDAD sin editar (7 dígitos), pero EDTCDE(J) lo imprime
+     A* con hasta 10 caracteres (comas, decimal, signo) — con "+2" se solaparían.
+     A*
+     A          R DETALLE                   SPACEA(1)
+     A            CODIGO        10A  O     1
+     A            DESCRIPCIO    30A  O    +2
+     A            CANTIDAD       7S 2O    +2
+     A                                      EDTCDE(J)
+     A            IMPORTE        9S 2O    +4
+     A                                      EDTCDE(J *)

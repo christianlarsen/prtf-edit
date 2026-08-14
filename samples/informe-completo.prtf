@@ -1,0 +1,43 @@
+     A* 
+     A* Informe completo: CABECERA (modo explicito) + DETALLE (modo flujo,
+     A* repetible) + TOTAL (modo explicito). Pensado para probar "Compose sequence"
+     A* en el preview: CABECERA x1, DETALLE xN, TOTAL x1.
+     A* 
+     A          R CABECERA
+     A            EMPRESA       30A  O  1  1
+     A                                      TEXT('Nombre de la empresa')
+     A            TITULO        40A  O  2  1
+     A                                      UNDERLINE
+     A                                  4  1DATE(*SYS *YY) EDTCDE(Y)
+     A                                  4 70'Pagina:'
+     A                                    +1PAGNBR
+     A                                  6  1'CODIGO'
+     A                                      UNDERLINE
+     A                                  6 13'DESCRIPCION'
+     A                                      UNDERLINE
+     A                                  6 54'CANTIDAD'
+     A                                      UNDERLINE
+     A                                  6 66'IMPORTE'
+     A                                      UNDERLINE
+     A                                  7  1'----------------------------------'
+     A* 
+     A* DETALLE: sin Line explicito, avanza una fila por escritura via
+     A* SPACEA(1) a nivel record. Compose sequence la coloca justo debajo de
+     A* CABECERA (fila 8) sin necesidad de SKIPB.
+     A* 
+     A          R DETALLE                   SPACEA(1)
+     A            CODIGO        10A  O     1
+     A            DESCRIPCIO    30A  O    +2
+     A            CANTIDAD       7S 2O    54
+     A                                      EDTCDE(J)
+     A            IMPORTE        9S 2O    66
+     A                                      EDTCDE(J *)
+     A* 
+     A* TOTAL: modo explicito, fila fija 20 — deja hueco para varias filas de
+     A* DETALLE antes de solapar (una limitacion real de posicion fija, no
+     A* manejo de salto de pagina todavia).
+     A* 
+     A          R TOTAL
+     A                                 20 55'TOTAL:'
+     A            IMPTOTAL       9S 2O 20 66
+     A                                      EDTCDE(J *)

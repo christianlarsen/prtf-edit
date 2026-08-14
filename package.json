@@ -57,7 +57,22 @@
         }
       ]
     },
-    "commands": []
+    "commands": [
+      {
+        "command": "prtf-edit.preview-record",
+        "title": "Preview Page Layout",
+        "icon": "$(open-preview)"
+      }
+    ],
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "prtf-edit.preview-record",
+          "when": "view == prtf-edit.schema-view && viewItem == record",
+          "group": "inline@1"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
