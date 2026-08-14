@@ -310,6 +310,10 @@ export function collectPageItems(elements: PrtfElement[], recordName: string): P
 export interface SequenceEntry {
 	recordName: string;
 	repeat: number;
+	/** Re-render this record's content at the top of every subsequent page created while
+	 * composing (via overflow or ENDPAGE) — the common "page header repeats automatically" report
+	 * pattern, without needing a manual entry per page. */
+	repeatOnPageBreak?: boolean;
 };
 
 /**
@@ -404,6 +408,12 @@ function positionRecordEntry(
  * instance restarts fresh at the top of the next page instead. (If it's still too tall to fit on
  * an empty page, it prints anyway, spilling past the configured boundary — a real design issue in
  * that case, not something to silently paper over.)
+ *
+ * An entry with `repeatOnPageBreak` becomes a "standing header": once its own turn in the
+ * sequence has been positioned, every *later* page break (from overflow or ENDPAGE, triggered by
+ * anything in the rest of the sequence) re-renders its content at the top of the new page first,
+ * before whatever caused the break continues — the common "page header repeats automatically"
+ * pattern, without a manual sequence entry per page.
  * @param elements - The full parsed document
  * @param sequence - The ordered, repeat-counted record formats to compose
  * @param overflowLine - The page length (OVRFLW/PAGESIZE) to roll over at
@@ -414,6 +424,17 @@ export function collectComposedPageItems(elements: PrtfElement[], sequence: Sequ
 	const pageLength = Math.max(1, Math.floor(overflowLine) || 1);
 	let currentLine = 0;
 	let currentPage = 1;
+	const standingHeaders: PrtfRecord[] = [];
+
+	const startNewPage = (): void => {
+		currentPage += 1;
+		currentLine = 0;
+		for (const header of standingHeaders) {
+			const result = positionRecordEntry(elements, header, currentLine, false);
+			for (const item of result.items) {items.push({ ...item, page: currentPage });};
+			currentLine = result.endLine;
+		};
+	};
 
 	for (const entry of sequence) {
 		const record = records.find(r => r.name === entry.recordName);
@@ -427,18 +448,21 @@ export function collectComposedPageItems(elements: PrtfElement[], sequence: Sequ
 			if (highestRow > pageLength && currentLine > 0) {
 				// Would overflow the current (non-empty) page — start this instance fresh at the
 				// top of a new one instead of letting it spill across the page boundary.
-				currentPage += 1;
-				currentLine = 0;
+				startNewPage();
 				result = positionRecordEntry(elements, record, currentLine, false);
 			};
 
 			for (const item of result.items) {items.push({ ...item, page: currentPage });};
 			currentLine = result.endLine;
 
-			if (hasEndPage(record.attributes)) {
-				currentPage += 1;
-				currentLine = 0;
-			};
+			if (hasEndPage(record.attributes)) {startNewPage();};
+		};
+
+		// Registered only after this entry's own occurrence is positioned — that occurrence
+		// already covers "the header prints where it's declared in the sequence"; only *later*
+		// page breaks should trigger the automatic repeat.
+		if (entry.repeatOnPageBreak && !standingHeaders.includes(record)) {
+			standingHeaders.push(record);
 		};
 	};
 
@@ -642,7 +666,11 @@ export class RecordPreviewPanel {
 				this.sequence = Array.isArray(message.items)
 					? message.items
 						.filter((it: any) => typeof it?.recordName === 'string' && it.recordName)
-						.map((it: any) => ({ recordName: it.recordName, repeat: Math.max(1, Math.floor(Number(it.repeat)) || 1) }))
+						.map((it: any) => ({
+							recordName: it.recordName,
+							repeat: Math.max(1, Math.floor(Number(it.repeat)) || 1),
+							repeatOnPageBreak: Boolean(it.repeatOnPageBreak)
+						}))
 					: [];
 				this.render();
 				break;
@@ -816,6 +844,12 @@ export class RecordPreviewPanel {
 		cursor: pointer;
 		padding: 0 4px;
 	}
+	.seq-row label {
+		display: inline-flex;
+		align-items: center;
+		gap: 2px;
+		white-space: nowrap;
+	}
 	.page-wrapper {
 		padding: 16px;
 		overflow: auto;
@@ -881,6 +915,21 @@ export class RecordPreviewPanel {
 		font-size: 12px;
 		color: #555;
 	}
+	.note summary {
+		cursor: pointer;
+		font-weight: bold;
+		color: #333;
+	}
+	.note ul {
+		margin: 8px 0 0;
+		padding-left: 18px;
+	}
+	.note li {
+		margin-bottom: 6px;
+	}
+	.note li:last-child {
+		margin-bottom: 0;
+	}
 </style>
 </head>
 <body>
@@ -911,31 +960,37 @@ export class RecordPreviewPanel {
 	<div class="page-wrapper">
 		<div id="page">${pagesHtml}</div>
 	</div>
-	<div class="note">Fields show as O (character/date/time) or 6 (numeric) — hover a field to see
-	its name (and its TEXT() description, if any). A numeric field with EDTCDE shows its edited
-	worst-case width instead (9s with commas/decimal point/sign, like RLU's own design view), and
-	UNDERLINE renders as underline, HIGHLIGHT (field- or record-level) as bold, and COLOR's named
-	colors (BLK/BLU/BRN/GRN/PNK/RED/TRQ/YLW) in that color — the RGB/CMYK/CIELAB/Highlight color
-	models aren't simple enough to map here, so those show in the default color. Click a field or
-	constant to jump to it in the source; drag it
-	to reposition (rewrites only its Line/Position columns — name, type and keywords are
-	untouched). "+ Constant" or "+ Field", then click the page, to add a new one there. Moving the
-	cursor in the source highlights it back here.
-	Page size is not stored in DDS source — set it here to match your CRTPRTF PAGESIZE.
-	A record positioned via SPACEB/SPACEA/SKIPB/SKIPA flow (no explicit Line) is shown as one pass
-	down the page in source order — dragging one of its fields/constants only moves it sideways
-	(rewrites Position, not Line), since its row comes from simulating those keywords, not from a
-	Line entry to rewrite.
-	"Compose sequence" combines several record formats (with a repeat count each, e.g. a header
-	once and a detail row several times) onto one page, chaining flow-mode records' current line
-	across the whole sequence — editing (drag, "+ Constant"/"+ Field") is unavailable while
-	composing.
-	Overlay shows a second record dimmed behind this one, read-only, as a reference while you drag
-	or place things in the active record — e.g. to see whether a detail row would collide with the
-	header above it. Not offered while composing a sequence.
-	Overflow (only shown while composing) is the OVRFLW/page-length line — composed content that
-	would go past it rolls onto a new page instead, shown as a separate sheet below; a record with
-	the ENDPAGE keyword always starts a new page right after it prints, regardless of Overflow.</div>
+	<details class="note">
+		<summary>Help</summary>
+		<ul>
+			<li><strong>Fields</strong> show as O (character/date/time) or 6 (numeric) — hover one to see
+			its name (and its TEXT() description, if any). A numeric field with EDTCDE shows its edited
+			worst-case width instead (9s with commas/decimal point/sign, like RLU's own design view).
+			UNDERLINE renders as underline, HIGHLIGHT (field- or record-level) as bold, and COLOR's named
+			colors (BLK/BLU/BRN/GRN/PNK/RED/TRQ/YLW) in that color — the RGB/CMYK/CIELAB/Highlight color
+			models aren't simple enough to map here, so those show in the default color.</li>
+			<li><strong>Editing:</strong> click a field or constant to jump to it in the source; drag it to
+			reposition (rewrites only its Line/Position columns — name, type and keywords stay untouched).
+			"+ Constant" or "+ Field", then click the page, to add a new one there. Moving the cursor in
+			the source highlights it back here. Page size isn't stored in DDS source — set Rows/Cols here
+			to match your CRTPRTF PAGESIZE.</li>
+			<li><strong>Flow-mode records</strong> (positioned via SPACEB/SPACEA/SKIPB/SKIPA, no explicit
+			Line) show as one pass down the page in source order — dragging a field/constant in one only
+			moves it sideways (rewrites Position, not Line), since its row comes from simulating those
+			keywords, not from a Line entry to rewrite.</li>
+			<li><strong>Compose sequence</strong> combines several record formats (with a repeat count
+			each, e.g. a header once and a detail row several times) onto one or more pages, chaining
+			flow-mode records' current line across the whole sequence — editing (drag, "+ Constant"/
+			"+ Field") is unavailable while composing. Overflow (shown only while composing) is the
+			OVRFLW/page-length line — content that would go past it rolls onto a new page, shown as a
+			separate sheet below; a record with the ENDPAGE keyword always starts a new page right after
+			it prints, regardless of Overflow. A row's "repeat per page" checkbox re-prints that record's
+			content at the top of every later page automatically — the usual page-header pattern.</li>
+			<li><strong>Overlay</strong> shows a second record dimmed behind this one, read-only, as a
+			reference while you drag or place things in the active record — e.g. to see whether a detail
+			row would collide with the header above it. Not offered while composing a sequence.</li>
+		</ul>
+	</details>
 	<script>
 		const vscode = acquireVsCodeApi();
 		document.getElementById('record').addEventListener('change', e => {
@@ -971,7 +1026,7 @@ export class RecordPreviewPanel {
 		const recordOptionsHtml = document.getElementById('record').innerHTML;
 		const initialSequence = ${JSON.stringify(this.sequence)};
 
-		function makeSequenceRow(recordName, repeat) {
+		function makeSequenceRow(recordName, repeat, repeatOnPageBreak) {
 			const row = document.createElement('span');
 			row.className = 'seq-row';
 			const select = document.createElement('select');
@@ -982,6 +1037,13 @@ export class RecordPreviewPanel {
 			repeatInput.type = 'number';
 			repeatInput.min = '1';
 			repeatInput.value = String(repeat || 1);
+			const headerLabel = document.createElement('label');
+			headerLabel.title = 'Repeat this record\\'s content at the top of every later page (e.g. a page header)';
+			const headerCheckbox = document.createElement('input');
+			headerCheckbox.type = 'checkbox';
+			headerCheckbox.checked = Boolean(repeatOnPageBreak);
+			headerLabel.appendChild(headerCheckbox);
+			headerLabel.appendChild(document.createTextNode(' repeat per page'));
 			const removeBtn = document.createElement('button');
 			removeBtn.type = 'button';
 			removeBtn.textContent = '\\u00d7';
@@ -989,9 +1051,11 @@ export class RecordPreviewPanel {
 			row.appendChild(select);
 			row.appendChild(timesLabel);
 			row.appendChild(repeatInput);
+			row.appendChild(headerLabel);
 			row.appendChild(removeBtn);
 			select.addEventListener('change', postSequence);
 			repeatInput.addEventListener('change', postSequence);
+			headerCheckbox.addEventListener('change', postSequence);
 			removeBtn.addEventListener('click', () => { row.remove(); postSequence(); });
 			return row;
 		};
@@ -999,13 +1063,14 @@ export class RecordPreviewPanel {
 		function postSequence() {
 			const items = Array.from(sequenceRows.querySelectorAll('.seq-row')).map(row => ({
 				recordName: row.querySelector('select').value,
-				repeat: Number(row.querySelector('input').value) || 1
+				repeat: Number(row.querySelector('input[type=number]').value) || 1,
+				repeatOnPageBreak: row.querySelector('input[type=checkbox]').checked
 			}));
 			vscode.postMessage({ type: 'setSequence', items });
 		};
 
 		addSequenceRowBtn.addEventListener('click', () => {
-			sequenceRows.appendChild(makeSequenceRow('', 1));
+			sequenceRows.appendChild(makeSequenceRow('', 1, false));
 			postSequence();
 		});
 
@@ -1031,9 +1096,9 @@ export class RecordPreviewPanel {
 		});
 
 		if (initialSequence.length > 0) {
-			initialSequence.forEach(it => sequenceRows.appendChild(makeSequenceRow(it.recordName, it.repeat)));
+			initialSequence.forEach(it => sequenceRows.appendChild(makeSequenceRow(it.recordName, it.repeat, it.repeatOnPageBreak)));
 		} else {
-			sequenceRows.appendChild(makeSequenceRow('', 1));
+			sequenceRows.appendChild(makeSequenceRow('', 1, false));
 		};
 		setComposeMode(composeToggle.checked);
 

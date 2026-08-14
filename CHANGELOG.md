@@ -215,3 +215,13 @@
   `HIGHLIGHT` with a field-level `COLOR(RED)`, a field with neither of its own (inheriting bold
   from the record only), and a constant with its own `COLOR(BLU)` and `HIGHLIGHT` — all three
   resolved bold/color correctly.
+- Added a "repeat per page" checkbox to each "Compose sequence" row: once that entry's own turn
+  in the sequence has been positioned, every *later* page break (from overflow or `ENDPAGE`,
+  triggered by anything else in the sequence) re-renders that record's content at the top of the
+  new page first, before whatever caused the break continues — the standard "page header repeats
+  automatically" pattern, without needing a manual entry per page. Registered as a "standing
+  header" only after its own first occurrence (so it doesn't also trigger on its own placement),
+  tracked in `collectComposedPageItems` and applied via a new `startNewPage()` helper shared by
+  both the overflow and `ENDPAGE` roll-over paths, so the two stay in sync automatically. Validated
+  against a header marked to repeat with ten detail-row repeats forcing two pages: the header's
+  own field appears once per page, right above the continuing detail rows on each.
