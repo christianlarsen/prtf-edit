@@ -293,3 +293,93 @@
   "Focus") only so the toggle survives a re-render; the toggle itself is pure CSS, no
   recomputation needed. Validated the ruler text's alignment (e.g. "10" ends exactly at column 10)
   and the generated markup's tag balance against a real grid.
+- "+ Field"/"+ Constant" now respect a flow-mode record's own layout style instead of always
+  writing an explicit Line: new `resolveFlowModeInsertion` (`prtf-edit.parser.ts`) checks whether
+  every existing field/constant in the target record is already flow-positioned (SPACEB/SPACEA-
+  driven, no Line anywhere), and if so, `buildFieldLine`/`buildConstantLines` leave Line (39-41)
+  blank and append a keyword-only `SPACEB(n)` continuation line instead — `n` being the gap between
+  the clicked row and the record's last existing item, re-simulated via the parser's own
+  `simulateRecordFlow`. Writing an explicit Line into an otherwise flow-mode record would be a real
+  CRTPRTF conflict (CPD7826/CPD7860), not just a style mismatch, so this was previously a silent
+  trap. Position (42-44) is unaffected either way — only Line is flow/explicit-sensitive. An empty
+  record, or one that's already explicit-mode, is untouched (same behaviour as before). Both
+  `buildFieldLine` and `buildConstantLines` now return `string[]` (was a single string for
+  `buildFieldLine`) to accommodate the extra continuation line. Dragging (moving) an existing
+  flow-mode item vertically is a separate, not-yet-done follow-up — today's drag still only allows
+  moving such items horizontally (`moveElement`'s `columnOnly` mode).
+- Dragging a flow-mode field/constant vertically is now supported (previously the row snapped back
+  to where it already was — see the entry above). New `resolveFlowModeMove` (`prtf-edit.parser.ts`)
+  works out the running line coming into the dragged item (via a new `baselineBefore` map on
+  `simulateRecordFlow`'s result — the value right before the item's own SKIPB/SPACEB would apply,
+  as opposed to `rows`, which is the value after) and `moveElement`/`applyFlowMove`
+  (`prtf-edit.move-element.ts`) rewrite the item's own `SPACEB(n)` to the delta needed, still
+  rewriting Position (col) the same way as before via `buildRepositionedColumnOnly`. Handles all
+  three shapes a SPACEB can already be in: replaces the number in place when it's inline on the
+  item's own line (alongside other keywords, e.g. `SPACEB(2) UNDERLINE`), replaces it in place when
+  it's on its own separate continuation line, or deletes that continuation line outright (via the
+  new `isEmptyKeywordOnlyLine` check) rather than leaving it blank when the new delta is 0; adds a
+  brand-new continuation line, same convention as the add-flow-mode feature above, when the item
+  had no SPACEB at all yet. Only the dragged item's own SPACEB is touched — anything later in the
+  record naturally cascades by the same delta, since its own SPACEB (if any) is relative to
+  wherever this item leaves the running line, the same way hand-editing the SPACEB would behave.
+  An item whose row already comes from its *own* SKIPB (an absolute jump) falls back to the old
+  column-only dragging — reverse-solving what SKIPB itself would need to become isn't attempted.
+  Caught a real off-by-one while writing the validation script for this: `resolveFlowModeMove` was
+  clamping the baseline to a minimum of 1 before returning it, but `simulateRecordFlow` only clamps
+  the *final* resolved row (after adding the item's own SPACEB) to a minimum of 1, not the running
+  line coming into it — so for a record's first item with no leading record-level SKIPB/SPACEB
+  (a legitimate raw baseline of 0), the clamped baseline overstated how much SPACEB was needed by
+  exactly 1 line. Fixed by returning the raw, unclamped baseline. The client/server `moveItem`
+  message field and drag state were renamed from `columnOnly` to `flow` throughout, since "column
+  only" no longer describes what it does now that the row moves too.
+- Dragging a flow-mode item past its own baseline (i.e. trying to make it print earlier than a
+  SPACEB of its own could ever reach — SPACEB can't go negative) now swaps its whole source block
+  with the immediately preceding field/constant in the same record, instead of just clamping in
+  place: since DDS flow order is strictly source order, printing earlier is only possible by
+  actually coming earlier in the source. New `findPreviousItemInRecord` locates that neighbour (or
+  reports there isn't one, when the dragged item is already the record's first — swapping past the
+  record's own name line isn't attempted, falls back to the old clamp), `findBlockEndLineIndex`
+  works out the dragged item's full block (its definition line through every trailing keyword-only
+  continuation line, up to whatever the next record/field/constant starts on — comment/blank lines
+  in between travel with it, same as anywhere else in this codebase's continuation-line model), and
+  `applyFlowSwap` replaces the combined range of both blocks with them reordered, verbatim — no
+  keyword is rewritten, only the physical order changes, so each item's own keywords (SPACEB
+  included) stay exactly as they were and whatever row falls out is whatever `simulateRecordFlow`
+  naturally resolves for the new order (composable with a follow-up plain drag if a specific row is
+  wanted; one hop per drag — jumping past two items needs two drags). The dragged item's own
+  Position still updates to wherever it was dropped, same as any other move. Prompted by a concrete
+  case: a DETALLE-style record where CANTIDAD had no SPACEB of its own and rode along on
+  DESCRIPCIO's row — dragging it up hit the baseline immediately (correct — nothing to give up),
+  and the only honest way to actually get it printing before DESCRIPCIO was to reorder them.
+- Added a manual "edit spacing" flow: right-click a field/constant in the preview to set or clear
+  its own SKIPB/SPACEB/SPACEA/SKIPA directly (`prtf-edit.edit-spacing.ts`, `editSpacing`) — a
+  QuickPick lists the four keywords with their current value, then an input box sets a new one (1
+  to 255) or clears it if left blank. This is the manual complement to the drag/add features, which
+  only ever manage a flow-mode item's own SPACEB: covers SKIPA/SKIPB (never touched automatically)
+  and setting an absolute jump instead of a relative advance — e.g. converting a TOTAL-style
+  record's explicit Line/Position to an absolute SKIPB at the same row it already prints at (the
+  SKIPB prompt pre-fills with the item's current row for exactly that case). Deliberately scoped to
+  one item at a time, per the "simple" option chosen over auto-converting the whole record: adding
+  a spacing keyword to an item that still has an explicit Line blanks *that item's own* Line (the
+  two can't coexist on the same line without a CPD7826/CPD7860 conflict), but doesn't touch any
+  other item in the record — if that leaves the record mixed, the validator flags it and the rest
+  gets converted the same way, one item at a time, until the whole record is flow-consistent again.
+  Disabled while composing a sequence, same reasoning as drag/add. Right-click no longer starts a
+  drag (added an `e.button !== 0` guard to the existing mousedown handler).
+  Fixed a real gap in `validatePositioningConflicts` while writing the validation script for this:
+  it only scanned SPACE/SKIP keywords on items already resolved to `positionSource === 'explicit'`,
+  so a record mid-conversion — one item blanked to flow with its own SPACEB/SKIPB, another still
+  explicit — went undetected, because the newly-blanked item's row stays unresolved (`positionSource`
+  undefined, not yet `'flow'`) for as long as *any* item in the record is still explicit, which is
+  exactly the state a partial manual conversion leaves it in. Now scans every item in the record,
+  not just the ones already flagged explicit.
+- "Edit spacing" now offers to convert the *whole* record in one step when the keyword being set
+  is SKIPB specifically: if other fields/constants in the same record still have an explicit Line,
+  a confirmation (`vscode.window.showWarningMessage`, modal) offers to give each of them their own
+  `SKIPB(<their current row>)` too, at the same time as the one being edited. SKIPB is the one
+  keyword this is safe to do generally for — unlike SPACEB/SPACEA, which are relative and would
+  need the items reordered to handle rows that aren't already increasing in source order (see the
+  swap feature above), SKIPB is an absolute jump, so giving every item its own current row via
+  SKIPB preserves the record's exact layout regardless of order. Verified against a record with
+  rows deliberately out of source order (5, 12, 8) — each kept its own row after conversion.
+  Declining the prompt falls back to the original one-item-at-a-time behaviour.

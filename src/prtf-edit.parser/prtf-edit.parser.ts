@@ -643,6 +643,12 @@ export interface FlowSimulationResult {
      * even when the same field/constant is simulated more than once, e.g. a repeated detail row
      * in a composed multi-record preview — each call gets its own fresh Map). */
     rows: Map<number, number>;
+    /** The running "current line" coming into each item, keyed by lineIndex — i.e. right before
+     * that item's own SKIPB/SPACEB gets a chance to advance it further (so it's the record-level
+     * SKIPB/SPACEB result for the first item, or the previous item's own SPACEA/SKIPA result for
+     * any other). Used by resolveFlowModeMove to work out what SPACEB delta a dragged item needs
+     * to land on a chosen row, measured from wherever things stood coming into it. */
+    baselineBefore: Map<number, number>;
     /** The running "current line" after this record's own trailing SPACEA/SKIPA — the starting
      * point for whatever comes next (the next repetition, or the next record in a sequence). */
     endLine: number;
@@ -666,9 +672,11 @@ export function simulateRecordFlow(
     startLine: number
 ): FlowSimulationResult {
     const rows = new Map<number, number>();
+    const baselineBefore = new Map<number, number>();
     let currentLine = applySkipSpaceBefore(record.attributes, startLine);
 
     for (const item of items) {
+        baselineBefore.set(item.lineIndex, currentLine);
         currentLine = applySkipSpaceBefore(item.attributes, currentLine);
         if (currentLine <= 0) {currentLine = 1;};
 
@@ -684,7 +692,7 @@ export function simulateRecordFlow(
     // there's no "next" to feed when a record is parsed/previewed in isolation.
     currentLine = applySkipSpaceAfter(record.attributes, currentLine);
 
-    return { rows, endLine: currentLine };
+    return { rows, baselineBefore, endLine: currentLine };
 };
 
 /**
@@ -713,6 +721,87 @@ function resolveFlowModePositions(prtfElements: PrtfElement[]): void {
             item.positionSource = 'flow';
         };
     };
+};
+
+export interface FlowModeInsertionInfo {
+    /** True when every existing field/constant in the record is flow-positioned (SPACEB/SPACEA-
+     * driven, no Line anywhere) — an empty record, or one with any explicit-Line item, is not. */
+    isFlowMode: boolean;
+    /** The last existing field/constant's own resolved row, in source order — where a newly
+     * appended item's SPACEB(n) needs to count forward from. Only set when isFlowMode is true. */
+    lastItemRow?: number;
+};
+
+/**
+ * Determines whether adding a new field/constant to a record should use SPACEB-driven flow
+ * positioning (matching the record's own existing style) instead of an explicit Line — writing an
+ * explicit Line into an otherwise flow-mode record is a real CRTPRTF conflict (CPD7826/CPD7860),
+ * not just a style mismatch. Used by the "+ Field"/"+ Constant" placing mode; the equivalent check
+ * for dragging an existing item lives separately (moveElement).
+ * @param elements - The full parsed element list (ExtensionState.lastPrtfElements)
+ * @param recordName - The record the new field/constant is being added to
+ */
+export function resolveFlowModeInsertion(elements: PrtfElement[], recordName: string): FlowModeInsertionInfo {
+    const record = elements.find((el): el is PrtfRecord => el.kind === 'record' && el.name === recordName);
+    const items = elements
+        .filter((el): el is PrtfField | PrtfConstant =>
+            (el.kind === 'field' || el.kind === 'constant') && el.recordname === recordName)
+        .sort((a, b) => a.lineIndex - b.lineIndex);
+
+    if (!record || items.length === 0 || items.some(item => item.positionSource !== 'flow')) {
+        return { isFlowMode: false };
+    };
+
+    const { rows } = simulateRecordFlow(record, items, 0);
+    const lastItem = items[items.length - 1];
+    return { isFlowMode: true, lastItemRow: rows.get(lastItem.lineIndex) ?? 1 };
+};
+
+export interface FlowModeMoveInfo {
+    /** True when the target item is itself flow-positioned within a fully flow-mode record. */
+    isFlowMode: boolean;
+    /** The running line coming into this item, before its own SKIPB/SPACEB — the point a new
+     * SPACEB(n) needs to count forward from to land the item on a chosen row. Only set when
+     * isFlowMode is true. Deliberately *not* clamped to a minimum of 1 here — simulateRecordFlow
+     * only clamps the final resolved row (after adding this item's own SPACEB), not the running
+     * line coming into it, so clamping this value would silently overstate how much SPACEB is
+     * actually needed (off by the clamp) whenever the raw baseline is 0 (typically a record's
+     * first item, with no leading record-level SKIPB/SPACEB). */
+    baselineRow?: number;
+    /** True when the item's own SKIPB (an absolute jump, not a relative advance) already
+     * contributes to its row — dragging it vertically isn't supported in that case, since the
+     * SPACEB this feature writes only adds on top of wherever SKIPB already jumped to, and
+     * resolving the drag target back to "what SKIPB alone would need to be" isn't attempted.
+     * Column-only dragging still works, same as a fully non-flow item. */
+    hasOwnSkipB?: boolean;
+};
+
+/**
+ * Determines whether dragging an existing field/constant to a new row should adjust its own
+ * SPACEB (matching the record's flow-mode style) instead of rewriting an explicit Line — same
+ * reasoning as resolveFlowModeInsertion, applied to an existing item instead of a new one.
+ * @param elements - The full parsed element list (ExtensionState.lastPrtfElements)
+ * @param recordName - The record the dragged item belongs to
+ * @param targetLineIndex - The dragged item's own source line (field) or first line (constant)
+ */
+export function resolveFlowModeMove(elements: PrtfElement[], recordName: string, targetLineIndex: number): FlowModeMoveInfo {
+    const record = elements.find((el): el is PrtfRecord => el.kind === 'record' && el.name === recordName);
+    const items = elements
+        .filter((el): el is PrtfField | PrtfConstant =>
+            (el.kind === 'field' || el.kind === 'constant') && el.recordname === recordName)
+        .sort((a, b) => a.lineIndex - b.lineIndex);
+
+    if (!record || items.length === 0 || items.some(item => item.positionSource !== 'flow')) {
+        return { isFlowMode: false };
+    };
+
+    const targetItem = items.find(item => item.lineIndex === targetLineIndex);
+    if (!targetItem) {return { isFlowMode: false };};
+
+    const hasOwnSkipB = (targetItem.attributes ?? []).some(attr => /\bSKIPB\(/i.test(attr.value));
+
+    const { baselineBefore } = simulateRecordFlow(record, items, 0);
+    return { isFlowMode: true, baselineRow: baselineBefore.get(targetLineIndex) ?? 0, hasOwnSkipB };
 };
 
 /**

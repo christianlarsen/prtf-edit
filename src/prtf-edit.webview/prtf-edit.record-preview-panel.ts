@@ -12,6 +12,7 @@ import { revealInTree } from '../prtf-edit.providers/prtf-edit.providers';
 import { moveElement } from '../prtf-edit.commands/prtf-edit.move-element';
 import { addConstantAt } from '../prtf-edit.commands/prtf-edit.add-constant';
 import { addFieldAt } from '../prtf-edit.commands/prtf-edit.add-field';
+import { editSpacing } from '../prtf-edit.commands/prtf-edit.edit-spacing';
 
 /** Default page size (66 lines is the traditional 11" @ 6 LPI page; 132 columns is 10 CPI on
  * standard wide computer paper — both just starting points, editable in the toolbar). */
@@ -282,8 +283,11 @@ function buildFieldPageItem(field: PrtfField, rowOverride?: number, forceFlowFla
 
 	const textDescription = findTextKeyword(field.attributes);
 	const flowPositioned = forceFlowFlag ?? (field.positionSource === 'flow');
-	const title = [textDescription ? `${field.name} — ${textDescription}` : field.name, flowPositioned ? '(flow-positioned; drag moves column only)' : '']
-		.filter(Boolean).join(' ');
+	const title = [
+		textDescription ? `${field.name} — ${textDescription}` : field.name,
+		flowPositioned ? '(flow-positioned; drag adjusts SPACEB)' : '',
+		'— right-click to edit SKIPB/SPACEB/SPACEA/SKIPA'
+	].filter(Boolean).join(' ');
 	return {
 		row, col: field.column, text: fieldPlaceholderText(field), title, lineIndex: field.lineIndex,
 		underline: hasUnderline(field.attributes), flowPositioned,
@@ -295,7 +299,11 @@ function buildFieldPageItem(field: PrtfField, rowOverride?: number, forceFlowFla
 function buildConstantPageItem(constant: PrtfConstant, rowOverride?: number, forceFlowFlag?: boolean, recordAttributes?: PrtfAttribute[]): PageItem {
 	const row = rowOverride ?? constant.row;
 	const flowPositioned = forceFlowFlag ?? (constant.positionSource === 'flow');
-	const title = [findTextKeyword(constant.attributes), flowPositioned ? '(flow-positioned; drag moves column only)' : ''].filter(Boolean).join(' ') || undefined;
+	const title = [
+		findTextKeyword(constant.attributes),
+		flowPositioned ? '(flow-positioned; drag adjusts SPACEB)' : '',
+		'— right-click to edit SKIPB/SPACEB/SPACEA/SKIPA'
+	].filter(Boolean).join(' ');
 	return {
 		row, col: constant.column, text: constantPlaceholderText(constant), title, lineIndex: constant.lineIndex,
 		underline: hasUnderline(constant.attributes), flowPositioned,
@@ -759,7 +767,12 @@ export class RecordPreviewPanel {
 				break;
 			case 'moveItem':
 				if (this.sequence.length === 0 && typeof message.lineIndex === 'number' && typeof message.newRow === 'number' && typeof message.newCol === 'number') {
-					moveElement(message.lineIndex, message.newRow, message.newCol, this.rows, this.cols, Boolean(message.columnOnly));
+					moveElement(message.lineIndex, message.newRow, message.newCol, this.rows, this.cols, Boolean(message.flow));
+				};
+				break;
+			case 'editSpacing':
+				if (this.sequence.length === 0 && typeof message.lineIndex === 'number') {
+					editSpacing(message.lineIndex);
 				};
 				break;
 			case 'addConstantAt':
@@ -1281,6 +1294,7 @@ export class RecordPreviewPanel {
 		});
 
 		page.addEventListener('mousedown', e => {
+			if (e.button !== 0) return; // Left-click only — right-click opens the spacing menu instead.
 			if (placingKind) {
 				const metrics = measure();
 				const col = Math.round((e.clientX - metrics.pageRect.left - metrics.padLeft) / metrics.charWidth) + 1;
@@ -1305,17 +1319,23 @@ export class RecordPreviewPanel {
 				// wouldn't map cleanly onto a single repeated occurrence) — never let this drag
 				// transition into a move, just a click-to-navigate.
 				locked: composeToggle.checked,
-				// A flow-positioned item (SPACEB/SPACEA/SKIPB/SKIPA) has no Line entry to rewrite,
-				// but its Position is a real column — dragging it can still move it sideways, the
-				// row just snaps back to where it already was.
-				columnOnly: el.dataset.flow === '1',
-				originalRow: Math.round((rect.top - metrics.pageRect.top - metrics.padTop) / metrics.rowHeight) + 1,
+				// A flow-positioned item (SPACEB/SPACEA/SKIPB/SKIPA) has no Line entry to rewrite —
+				// the server adjusts its own SPACEB instead when this is set (see moveElement).
+				flow: el.dataset.flow === '1',
 				width: el.textContent.length,
 				grabOffsetX: e.clientX - rect.left,
 				grabOffsetY: e.clientY - rect.top,
 				metrics
 			};
 			e.preventDefault();
+		});
+
+		page.addEventListener('contextmenu', e => {
+			if (composeToggle.checked) return; // Nothing editable while composing — same as drag.
+			const el = e.target.closest('[data-line]');
+			if (!el) return;
+			e.preventDefault();
+			vscode.postMessage({ type: 'editSpacing', lineIndex: Number(el.dataset.line) });
 		});
 
 		document.addEventListener('mousemove', e => {
@@ -1339,7 +1359,6 @@ export class RecordPreviewPanel {
 				document.body.appendChild(dragState.ghost);
 			};
 			const cell = cellFromEvent(e, dragState);
-			if (dragState.columnOnly) { cell.row = dragState.originalRow; };
 			// Skip the DOM write entirely when the mouse moved but the snapped cell didn't —
 			// avoids paying for a style update (and a message on drop) on every sub-cell pixel of
 			// mouse jitter, not just avoiding layout thrashing.
@@ -1356,7 +1375,7 @@ export class RecordPreviewPanel {
 			if (dragState.moved) {
 				if (dragState.ghost) dragState.ghost.remove();
 				if (shouldApply) {
-					vscode.postMessage({ type: 'moveItem', lineIndex: dragState.lineIndex, newRow: dragState.row, newCol: dragState.col, columnOnly: dragState.columnOnly });
+					vscode.postMessage({ type: 'moveItem', lineIndex: dragState.lineIndex, newRow: dragState.row, newCol: dragState.col, flow: dragState.flow });
 				};
 			} else if (shouldApply) {
 				vscode.postMessage({ type: 'gotoLine', lineIndex: dragState.lineIndex });

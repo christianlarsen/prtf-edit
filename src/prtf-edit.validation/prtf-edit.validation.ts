@@ -38,15 +38,19 @@ export function validatePositioningConflicts(elements: PrtfElement[]): vscode.Di
 	const recordElements = elements.filter((el): el is PrtfRecord => el.kind === 'record');
 
 	for (const record of recordElements) {
-		const positionedItems = elements.filter((el): el is PrtfField | PrtfConstant =>
-			(el.kind === 'field' || el.kind === 'constant') &&
-			el.recordname === record.name &&
-			el.positionSource === 'explicit'
+		const allItems = elements.filter((el): el is PrtfField | PrtfConstant =>
+			(el.kind === 'field' || el.kind === 'constant') && el.recordname === record.name
 		);
+		const positionedItems = allItems.filter(el => el.positionSource === 'explicit');
 		if (positionedItems.length === 0) {continue;}
 
 		const recordSpaceSkip = findSpaceSkipAttributes(record.attributes);
-		const fieldSpaceSkip = positionedItems.flatMap(item => findSpaceSkipAttributes(item.attributes));
+		// Scanned across *every* item in the record, not just the explicit ones: a record mid-way
+		// through being converted one item at a time (see prtf-edit.edit-spacing.ts) can have the
+		// SPACE/SKIP keyword sitting on an item that hasn't resolved to 'flow' yet — its row stays
+		// unresolved (positionSource undefined) precisely because the record isn't all-flow yet, a
+		// real CRTPRTF conflict that scanning only positionedItems would silently miss.
+		const fieldSpaceSkip = allItems.flatMap(item => findSpaceSkipAttributes(item.attributes));
 		if (recordSpaceSkip.length === 0 && fieldSpaceSkip.length === 0) {continue;}
 
 		diagnostics.push(lineDiagnostic(

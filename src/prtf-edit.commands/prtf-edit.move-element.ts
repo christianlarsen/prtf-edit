@@ -6,6 +6,7 @@
 
 import * as vscode from 'vscode';
 import { ExtensionState } from '../prtf-edit.states/state';
+import { resolveFlowModeMove } from '../prtf-edit.parser/prtf-edit.parser';
 
 /**
  * Rewrites a source line's Line/Position zone (columns 39-41, 42-44 — 0-based 38-40/41-43) with
@@ -26,8 +27,9 @@ export function buildRepositionedLine(originalLine: string, newRow: number, newC
  * simulating SPACEB/SPACEA/SKIPB/SKIPA — see resolveFlowModePositions in the parser): writing a
  * Line value there would silently convert it to explicit mode and put it at odds with the
  * record's own SPACE/SKIP keywords, which prtf-edit.validation.ts would then flag as a real
- * CRTPRTF conflict. Dragging such an item horizontally is still safe — Position is independent of
- * Line either way — just not vertically, since there's no Line entry to move.
+ * CRTPRTF conflict. Position is independent of Line either way, so this is always safe on its
+ * own — moving such an item *vertically* additionally requires adjusting its own SPACEB, which
+ * applyFlowMove below handles alongside this.
  */
 export function buildRepositionedColumnOnly(originalLine: string, newCol: number): string {
 	const formattedCol = String(newCol).padStart(3, ' ');
@@ -36,18 +38,169 @@ export function buildRepositionedColumnOnly(originalLine: string, newCol: number
 	return prefix + formattedCol + suffix;
 };
 
+/** Matches an existing SPACEB(n) keyword anywhere in a line's text (case-insensitive), including
+ * one leading whitespace character so removing it doesn't leave a stray double space behind. */
+const SPACEB_PATTERN = /\s?\bSPACEB\(\s*\d+\s*\)/i;
+
 /**
- * Moves a field or constant to a new (row, col) by editing its source line directly — used by the
- * preview's drag-to-reposition. Only touches columns 39-44; the name, type, keywords and
- * everything else on the line are left exactly as they were.
+ * Replaces an existing SPACEB(n) on a line with a new value, or removes it entirely when
+ * newValue is 0 (flow-mode's own "no keyword = continue on the current line" rule — same as a
+ * blank Line means "same row as before" in explicit mode). Assumes the line already contains a
+ * SPACEB keyword; callers only reach this once they've confirmed that via SPACEB_PATTERN.
+ */
+export function applySpaceBToLine(lineText: string, newValue: number): string {
+	return newValue > 0
+		? lineText.replace(SPACEB_PATTERN, ` SPACEB(${newValue})`)
+		: lineText.replace(SPACEB_PATTERN, '');
+};
+
+/**
+ * True for a keyword-only continuation line (blank sequence/indicator/name/position zone, just
+ * form-type 'A' in column 6 — see buildFieldLine/buildConstantLines) that's left with nothing at
+ * all in its keyword zone, e.g. after applySpaceBToLine strips out its only keyword. Such a line
+ * is now pure dead weight and should be deleted outright rather than left behind blank.
+ */
+export function isEmptyKeywordOnlyLine(lineText: string): boolean {
+	if (lineText.length < 6 || lineText[5] !== 'A') {return false;};
+	return lineText.substring(0, 5).trim() === '' && lineText.substring(6).trim() === '';
+};
+
+/**
+ * Moves a flow-mode field/constant to a new (row, col): always rewrites Position on its own
+ * primary line (via buildRepositionedColumnOnly), and separately updates, removes, or adds this
+ * item's own SPACEB(n) so the row the parser resolves it to (via simulateRecordFlow) matches
+ * `clampedRow` — mirroring the same SPACEB-continuation-line convention addFieldAt/addConstantAt
+ * already use (see prtf-edit.parser.ts's resolveFlowModeInsertion). Only this item's own SPACEB is
+ * touched; anything later in the record naturally shifts by the same delta, since its own SPACEB
+ * (if any) is relative to wherever this item leaves the running line — the same cascade that would
+ * happen if the SPACEB were edited by hand.
+ */
+async function applyFlowMove(
+	document: vscode.TextDocument,
+	primaryLine: vscode.TextLine,
+	lineIndex: number,
+	clampedRow: number,
+	clampedCol: number,
+	baselineRow: number,
+	item: { lastLineIndex?: number; attributes?: { value: string; lineIndex: number }[] }
+): Promise<boolean> {
+	const newSpaceB = Math.max(0, clampedRow - baselineRow);
+	const existingAttr = (item.attributes ?? []).find(attr => SPACEB_PATTERN.test(attr.value));
+
+	let updatedPrimaryText = buildRepositionedColumnOnly(primaryLine.text, clampedCol);
+	const edit = new vscode.WorkspaceEdit();
+
+	if (existingAttr && existingAttr.lineIndex === lineIndex) {
+		// Inline on the item's own line (e.g. "...SPACEB(2) UNDERLINE") — fold both changes into
+		// one replace so the two edits can't overlap.
+		updatedPrimaryText = applySpaceBToLine(updatedPrimaryText, newSpaceB);
+		edit.replace(document.uri, primaryLine.range, updatedPrimaryText);
+	} else if (existingAttr) {
+		edit.replace(document.uri, primaryLine.range, updatedPrimaryText);
+		const spaceBLine = document.lineAt(existingAttr.lineIndex);
+		const updatedSpaceBText = applySpaceBToLine(spaceBLine.text, newSpaceB);
+		if (newSpaceB === 0 && isEmptyKeywordOnlyLine(updatedSpaceBText)) {
+			edit.delete(document.uri, spaceBLine.rangeIncludingLineBreak);
+		} else {
+			edit.replace(document.uri, spaceBLine.range, updatedSpaceBText);
+		};
+	} else {
+		edit.replace(document.uri, primaryLine.range, updatedPrimaryText);
+		if (newSpaceB > 0) {
+			const anchorLineIndex = item.lastLineIndex ?? lineIndex;
+			const insertPosition = document.lineAt(anchorLineIndex).range.end;
+			const spaceBLine = ' '.repeat(5) + 'A' + ' '.repeat(38) + `SPACEB(${newSpaceB})`;
+			edit.insert(document.uri, insertPosition, '\n' + spaceBLine);
+		};
+	};
+
+	return vscode.workspace.applyEdit(edit);
+};
+
+/**
+ * A flow-mode item's row can never fall before its own baseline (see resolveFlowModeMove) —
+ * SPACEB can't be negative, so nothing short of reordering the source can make it print earlier
+ * than whatever already precedes it. Finds that immediately preceding field/constant *within the
+ * same record*, so a drag past the baseline can swap places with it instead of just clamping.
+ * Returns undefined when the dragged item is already the record's first field/constant (nothing
+ * to swap with — the record format's own name line is not a swap candidate).
+ */
+export function findPreviousItemInRecord(elements: any[], recordName: string, lineIndex: number): { lineIndex: number; recordname: string } | undefined {
+	const items = elements
+		.filter((el: any) => (el.kind === 'field' || el.kind === 'constant') && el.recordname === recordName)
+		.sort((a: any, b: any) => a.lineIndex - b.lineIndex);
+	const index = items.findIndex((el: any) => el.lineIndex === lineIndex);
+	return index > 0 ? items[index - 1] : undefined;
+};
+
+/**
+ * The last source line belonging to an item's own block: its definition line through every
+ * trailing keyword-only continuation line, up to (but not including) whatever the next record/
+ * field/constant in the whole document starts on. Comment/blank lines in between are swept up as
+ * part of the block too, same as they'd travel with the item in any other edit — there's no
+ * separate "these belong to nobody" case in DDS's own continuation-line model.
+ */
+export function findBlockEndLineIndex(elements: any[], afterLineIndex: number, totalLines: number): number {
+	const nextLineIndex = elements
+		.filter((el: any) => (el.kind === 'record' || el.kind === 'field' || el.kind === 'constant') && el.lineIndex > afterLineIndex)
+		.reduce((min: number | undefined, el: any) => min === undefined ? el.lineIndex : Math.min(min, el.lineIndex), undefined as number | undefined);
+	return (nextLineIndex ?? totalLines) - 1;
+};
+
+/**
+ * Swaps a flow-mode item's entire source block with the immediately preceding item's block — the
+ * only way to make an item print earlier than a flow-mode neighbor, since DDS flow order is
+ * strictly source order and SPACEB can't go negative (see findPreviousItemInRecord). Swaps the two
+ * full blocks (definition line through every trailing keyword-only line) verbatim: each item's own
+ * keywords — including any SPACEB/SPACEA/SKIPB/SKIPA it already has — travel with it unchanged,
+ * only the physical order changes, so whatever row(s) fall out are whatever simulateRecordFlow
+ * naturally resolves for the new order, not a specific target (one hop per drag — dragging further
+ * past a second item needs a second drag). The dragged item's own Position (col) still updates to
+ * the drop point, same as a normal move.
+ */
+async function applyFlowSwap(
+	document: vscode.TextDocument,
+	prevItem: { lineIndex: number },
+	item: { lineIndex: number },
+	blockEndLineIndex: number,
+	clampedCol: number
+): Promise<boolean> {
+	const prevBlockLines: string[] = [];
+	for (let i = prevItem.lineIndex; i < item.lineIndex; i++) {
+		prevBlockLines.push(document.lineAt(i).text);
+	};
+	const itemBlockLines: string[] = [];
+	for (let i = item.lineIndex; i <= blockEndLineIndex; i++) {
+		itemBlockLines.push(document.lineAt(i).text);
+	};
+	// Still land on the column dropped at — only the source order (and thus row) comes from the
+	// swap itself.
+	itemBlockLines[0] = buildRepositionedColumnOnly(itemBlockLines[0], clampedCol);
+
+	const wholeRange = new vscode.Range(document.lineAt(prevItem.lineIndex).range.start, document.lineAt(blockEndLineIndex).range.end);
+	const newText = [...itemBlockLines, ...prevBlockLines].join('\n');
+
+	const edit = new vscode.WorkspaceEdit();
+	edit.replace(document.uri, wholeRange, newText);
+	return vscode.workspace.applyEdit(edit);
+};
+
+/**
+ * Moves a field or constant to a new (row, col) — used by the preview's drag-to-reposition. For an
+ * explicit-mode item this rewrites Line/Position (39-44) directly; for a flow-mode one (see
+ * resolveFlowModeMove), Line stays blank and its own SPACEB is adjusted instead (applyFlowMove) —
+ * dragging it vertically still works, it just moves through a different keyword. An item whose own
+ * SKIPB (an absolute jump) already sets its row falls back to column-only dragging: SPACEB only
+ * adds on top of wherever SKIPB jumps to, and reverse-solving what SKIPB itself would need to
+ * become isn't attempted.
  * @param lineIndex - Zero-based source line of the field/constant to move
- * @param newRow - New DDS line number (1-based) — ignored when columnOnly is true
+ * @param newRow - New DDS line number (1-based)
  * @param newCol - New DDS position (1-based)
  * @param maxRow - Upper bound to clamp newRow to (the preview's configured page rows)
  * @param maxCol - Upper bound to clamp newCol to (the preview's configured page cols)
- * @param columnOnly - True for a flow-mode item: rewrite Position only, leave Line untouched
+ * @param flowMode - True when the preview already knows this item is flow-positioned
  */
-export async function moveElement(lineIndex: number, newRow: number, newCol: number, maxRow: number, maxCol: number, columnOnly = false): Promise<void> {
+export async function moveElement(lineIndex: number, newRow: number, newCol: number, maxRow: number, maxCol: number, flowMode = false): Promise<void> {
 	const document = ExtensionState.lastPrtfDocument;
 	if (!document) {return;}
 	if (lineIndex < 0 || lineIndex >= document.lineCount) {return;}
@@ -68,9 +221,50 @@ export async function moveElement(lineIndex: number, newRow: number, newCol: num
 		return;
 	};
 
-	const updatedLine = columnOnly
-		? buildRepositionedColumnOnly(line.text, clampedCol)
-		: buildRepositionedLine(line.text, clampedRow, clampedCol);
+	if (flowMode) {
+		const item = ExtensionState.lastPrtfElements.find((e: any) =>
+			(e.kind === 'field' || e.kind === 'constant') && e.lineIndex === lineIndex) as
+			{ recordname: string; lastLineIndex?: number; attributes?: { value: string; lineIndex: number }[] } | undefined;
+		const flowInfo = item ? resolveFlowModeMove(ExtensionState.lastPrtfElements, item.recordname, lineIndex) : { isFlowMode: false as const };
+
+		if (item && flowInfo.isFlowMode && !flowInfo.hasOwnSkipB) {
+			const baselineRow = flowInfo.baselineRow ?? 0;
+
+			if (clampedRow < baselineRow) {
+				// Past what this item's own SPACEB can reach — try swapping source order with
+				// whatever immediately precedes it instead of just clamping in place.
+				const prevItem = findPreviousItemInRecord(ExtensionState.lastPrtfElements, item.recordname, lineIndex);
+				if (prevItem) {
+					const blockEnd = findBlockEndLineIndex(ExtensionState.lastPrtfElements, lineIndex, document.lineCount);
+					const applied = await applyFlowSwap(document, prevItem, { lineIndex }, blockEnd, clampedCol);
+					if (!applied) {
+						vscode.window.showErrorMessage('PRTF: could not apply the move — the document may be read-only.');
+					};
+					return;
+				};
+				// Already the record's first item — nothing to swap with, fall through to a
+				// normal clamped move (lands back on its own baseline row).
+			};
+
+			const applied = await applyFlowMove(document, line, lineIndex, clampedRow, clampedCol, baselineRow, item);
+			if (!applied) {
+				vscode.window.showErrorMessage('PRTF: could not apply the move — the document may be read-only.');
+			};
+			return;
+		};
+
+		const updatedLine = buildRepositionedColumnOnly(line.text, clampedCol);
+		if (updatedLine === line.text) {return;}
+		const edit = new vscode.WorkspaceEdit();
+		edit.replace(document.uri, line.range, updatedLine);
+		const applied = await vscode.workspace.applyEdit(edit);
+		if (!applied) {
+			vscode.window.showErrorMessage('PRTF: could not apply the move — the document may be read-only.');
+		};
+		return;
+	};
+
+	const updatedLine = buildRepositionedLine(line.text, clampedRow, clampedCol);
 	if (updatedLine === line.text) {return;}
 
 	const edit = new vscode.WorkspaceEdit();

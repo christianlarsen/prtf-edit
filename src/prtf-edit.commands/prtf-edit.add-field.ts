@@ -6,6 +6,7 @@
 
 import * as vscode from 'vscode';
 import { ExtensionState } from '../prtf-edit.states/state';
+import { resolveFlowModeInsertion } from '../prtf-edit.parser/prtf-edit.parser';
 
 /** Field types offered by the quick-add flow — the v1 keyword scope (see README): character,
  * zoned decimal, date, time, timestamp. Floating point (F) and DBCS/UTF-16 (O/G) are left for a
@@ -20,20 +21,26 @@ const FIELD_TYPES: { label: string; value: string }[] = [
 
 /**
  * Builds a new field source line: blank indicator/reference zone, the name (left-justified in
- * columns 19-28), length/type/decimals, blank usage (O — output, the default), and explicit
- * Line/Position (39-44). Length is left blank for L/T/Z — DDS derives it from DATFMT/TIMFMT
- * (defaulting to *ISO) rather than accepting one, same rule the parser already relies on
- * (FIXED_LENGTH_BY_TYPE).
+ * columns 19-28), length/type/decimals, blank usage (O — output, the default), and Line/Position
+ * (39-44). Length is left blank for L/T/Z — DDS derives it from DATFMT/TIMFMT (defaulting to
+ * *ISO) rather than accepting one, same rule the parser already relies on (FIXED_LENGTH_BY_TYPE).
+ *
+ * `row` is `undefined` for a flow-mode target record (Line stays blank, matching the record's
+ * existing SPACEB/SPACEA style — writing an explicit Line there would be a real CRTPRTF conflict);
+ * in that case a `spaceBefore` count greater than 0 appends a keyword-only SPACEB(n) line right
+ * after, positioning the new field relative to whatever printed immediately before it.
+ * @param row - DDS line number (1-based), or undefined for a flow-mode record
+ * @param spaceBefore - Lines to advance past the previous item via SPACEB — only used when row is undefined
  */
-export function buildFieldLine(name: string, type: string, length: number, decimals: number, row: number, col: number): string {
+export function buildFieldLine(name: string, type: string, length: number, decimals: number, row: number | undefined, col: number, spaceBefore?: number): string[] {
 	const nameField = name.toUpperCase().padEnd(10, ' ');
 	const isDerivedLength = type === 'L' || type === 'T' || type === 'Z';
 	const lengthField = isDerivedLength ? '     ' : String(length).padStart(5, ' ');
 	const decimalsField = type === 'S' ? String(decimals).padStart(2, ' ') : '  ';
-	const rowField = String(row).padStart(3, ' ');
+	const rowField = row !== undefined ? String(row).padStart(3, ' ') : '   ';
 	const colField = String(col).padStart(3, ' ');
 
-	return (
+	const primaryLine = (
 		' '.repeat(5) +   // 1-5 sequence
 		'A' +             // 6 form type
 		' ' +             // 7 comment
@@ -49,6 +56,16 @@ export function buildFieldLine(name: string, type: string, length: number, decim
 		rowField +        // 39-41 line
 		colField          // 42-44 position
 	);
+
+	if (row === undefined && spaceBefore !== undefined && spaceBefore > 0) {
+		// Keyword-only continuation line: blank name/position zone (columns 7-44), same shape as
+		// any other multi-line DDS attribute in this codebase — linkAttributesToParents folds it
+		// into this field's own attributes since nothing else names a field/record in between.
+		const spaceBLine = ' '.repeat(5) + 'A' + ' '.repeat(38) + `SPACEB(${spaceBefore})`;
+		return [primaryLine, spaceBLine];
+	};
+
+	return [primaryLine];
 };
 
 const NAME_PATTERN = /^[A-Z@#$][A-Z0-9@#$]{0,9}$/;
@@ -128,13 +145,17 @@ export async function addFieldAt(recordName: string, row: number, col: number, m
 
 	const clampedRow = Math.min(Math.min(255, maxRow), Math.max(1, Math.round(row)));
 	const clampedCol = Math.min(Math.min(255, maxCol), Math.max(1, Math.round(col)));
-	const newLine = buildFieldLine(name, type, length, decimals, clampedRow, clampedCol);
+
+	const flowInfo = resolveFlowModeInsertion(ExtensionState.lastPrtfElements, recordName);
+	const newLines = flowInfo.isFlowMode
+		? buildFieldLine(name, type, length, decimals, undefined, clampedCol, Math.max(0, clampedRow - (flowInfo.lastItemRow ?? 1)))
+		: buildFieldLine(name, type, length, decimals, clampedRow, clampedCol);
 
 	const anchorLineIndex = record.endIndex ?? record.lineIndex;
 	const insertPosition = document.lineAt(anchorLineIndex).range.end;
 
 	const edit = new vscode.WorkspaceEdit();
-	edit.insert(document.uri, insertPosition, '\n' + newLine);
+	edit.insert(document.uri, insertPosition, '\n' + newLines.join('\n'));
 
 	const applied = await vscode.workspace.applyEdit(edit);
 	if (applied) {

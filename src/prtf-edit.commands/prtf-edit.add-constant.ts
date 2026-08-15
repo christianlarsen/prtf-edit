@@ -6,6 +6,7 @@
 
 import * as vscode from 'vscode';
 import { ExtensionState } from '../prtf-edit.states/state';
+import { resolveFlowModeInsertion } from '../prtf-edit.parser/prtf-edit.parser';
 
 /** Positions 45-80 (36 chars) hold the keyword/constant text on any one line. */
 const KEYWORD_ZONE_WIDTH = 36;
@@ -29,13 +30,19 @@ const MAX_CONSTANT_TEXT_LENGTH = 500;
  * line is a bare keyword-only line, same shape as any other multi-line DDS attribute in this
  * codebase (e.g. a field's TEXT() on its own following line). Embedded single quotes are doubled,
  * DDS's own literal-escaping convention, before splitting.
- * @param row - DDS line number (1-based)
+ *
+ * `row` is `undefined` for a flow-mode target record (Line stays blank, matching the record's
+ * existing SPACEB/SPACEA style — writing an explicit Line there would be a real CRTPRTF conflict);
+ * in that case a `spaceBefore` count greater than 0 appends one more keyword-only SPACEB(n) line
+ * after the literal, positioning the new constant relative to whatever printed immediately before it.
+ * @param row - DDS line number (1-based), or undefined for a flow-mode record
  * @param col - DDS position (1-based)
  * @param text - The literal text to print (unescaped — embedded quotes are doubled here)
+ * @param spaceBefore - Lines to advance past the previous item via SPACEB — only used when row is undefined
  */
-export function buildConstantLines(row: number, col: number, text: string): string[] {
+export function buildConstantLines(row: number | undefined, col: number, text: string, spaceBefore?: number): string[] {
 	const prefix = ' '.repeat(5) + 'A' + ' '.repeat(32); // columns 1-38
-	const rowText = String(row).padStart(3, ' ');
+	const rowText = row !== undefined ? String(row).padStart(3, ' ') : '   ';
 	const colText = String(col).padStart(3, ' ');
 	const positionPrefix = `${prefix}${rowText}${colText}`; // columns 1-44
 	// Same form-type 'A' in column 6 as every other line, position/name zone otherwise blank —
@@ -44,21 +51,26 @@ export function buildConstantLines(row: number, col: number, text: string): stri
 
 	const fullQuoted = `'${text.replace(/'/g, "''")}'`;
 
-	if (fullQuoted.length <= KEYWORD_ZONE_WIDTH) {
-		return [`${positionPrefix}${fullQuoted}`];
-	};
-
 	const lines: string[] = [];
-	let remaining = fullQuoted;
-	let isFirstLine = true;
 
-	while (remaining.length > KEYWORD_ZONE_WIDTH) {
-		const chunk = remaining.slice(0, CONTINUATION_CONTENT_WIDTH) + '-';
-		lines.push(`${isFirstLine ? positionPrefix : continuationPrefix}${chunk}`);
-		remaining = remaining.slice(CONTINUATION_CONTENT_WIDTH);
-		isFirstLine = false;
+	if (fullQuoted.length <= KEYWORD_ZONE_WIDTH) {
+		lines.push(`${positionPrefix}${fullQuoted}`);
+	} else {
+		let remaining = fullQuoted;
+		let isFirstLine = true;
+
+		while (remaining.length > KEYWORD_ZONE_WIDTH) {
+			const chunk = remaining.slice(0, CONTINUATION_CONTENT_WIDTH) + '-';
+			lines.push(`${isFirstLine ? positionPrefix : continuationPrefix}${chunk}`);
+			remaining = remaining.slice(CONTINUATION_CONTENT_WIDTH);
+			isFirstLine = false;
+		};
+		lines.push(`${isFirstLine ? positionPrefix : continuationPrefix}${remaining}`);
 	};
-	lines.push(`${isFirstLine ? positionPrefix : continuationPrefix}${remaining}`);
+
+	if (row === undefined && spaceBefore !== undefined && spaceBefore > 0) {
+		lines.push(`${continuationPrefix}SPACEB(${spaceBefore})`);
+	};
 
 	return lines;
 };
@@ -92,7 +104,11 @@ export async function addConstantAt(recordName: string, row: number, col: number
 
 	const clampedRow = Math.min(Math.min(255, maxRow), Math.max(1, Math.round(row)));
 	const clampedCol = Math.min(Math.min(255, maxCol), Math.max(1, Math.round(col)));
-	const newLines = buildConstantLines(clampedRow, clampedCol, text);
+
+	const flowInfo = resolveFlowModeInsertion(ExtensionState.lastPrtfElements, recordName);
+	const newLines = flowInfo.isFlowMode
+		? buildConstantLines(undefined, clampedCol, text, Math.max(0, clampedRow - (flowInfo.lastItemRow ?? 1)))
+		: buildConstantLines(clampedRow, clampedCol, text);
 
 	const anchorLineIndex = record.endIndex ?? record.lineIndex;
 	const insertPosition = document.lineAt(anchorLineIndex).range.end;
