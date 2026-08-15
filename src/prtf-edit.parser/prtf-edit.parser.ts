@@ -12,15 +12,9 @@ import {
     PrtfIndicator,
     PrtfFile,
     PrtfAttribute,
-    records,
-    fieldsPerRecords,
-    attributesFileLevel,
     isLiteralConstantValue,
     systemKeywordPlaceholder
 } from '../prtf-edit.model/prtf-edit.model';
-
-// Global state to store current parsed PRTF elements
-export let currentPrtfElements: PrtfElement[] = [];
 
 /**
  * Tracks the last resolved (row, col, length) of a positioned field/constant within the current
@@ -95,8 +89,8 @@ function resolveLineIndicators(marker: string, ownIndicators: PrtfIndicator[]): 
 /**
  * Main parser function that processes PRTF document text and returns structured elements.
  * @param text - Raw DDS document text to parse
- * @returns Array of parsed PRTF elements (file/record/field/constant/group — 'attribute' elements
- * are merged into their parent and filtered out of the returned array)
+ * @returns Array of parsed PRTF elements (file/record/field/constant — 'attribute' elements are
+ * merged into their parent and filtered out of the returned array)
  */
 export function parseDocument(text: string): PrtfElement[] {
     const lines = text.split(/\r?\n/);
@@ -112,19 +106,12 @@ export function parseDocument(text: string): PrtfElement[] {
 
     linkAttributesToParents(prtfElements);
     resolveFlowModePositions(prtfElements);
-    linkFieldsAndConstantsToRecords(prtfElements);
-    processFileAttributes(rootFile, prtfElements);
     assignRecordEndIndices(prtfElements, lines.length);
-    syncRecordAttributes(prtfElements);
 
-    currentPrtfElements = prtfElements;
     return prtfElements.filter(el => el.kind !== 'attribute');
 };
 
 function clearGlobalState(): void {
-    records.length = 0;
-    fieldsPerRecords.length = 0;
-    attributesFileLevel.length = 0;
     lastPositionInRecord = undefined;
     resetPendingIndicatorGroups();
 };
@@ -141,21 +128,12 @@ function parseAllLines(lines: string[]): PrtfElement[] {
     const elements: PrtfElement[] = [];
     let currentRecord = '';
     let lineIndex = 0;
-    // True once a field/constant has been seen for currentRecord — tells parseAttributeElement
-    // whether a keyword-only line still belongs to the record itself or to the last field/constant.
-    let hasFieldInCurrentRecord = false;
 
     while (lineIndex < lines.length) {
-        const parseResult = parseSingleDdsLine(lines, lineIndex, currentRecord, hasFieldInCurrentRecord);
+        const parseResult = parseSingleDdsLine(lines, lineIndex, currentRecord);
 
         if (parseResult.element) {
             elements.push(parseResult.element);
-
-            if (parseResult.element.kind === 'record') {
-                hasFieldInCurrentRecord = false;
-            } else if (parseResult.element.kind === 'field' || parseResult.element.kind === 'constant') {
-                hasFieldInCurrentRecord = true;
-            };
         };
 
         currentRecord = parseResult.lastRecord;
@@ -168,8 +146,7 @@ function parseAllLines(lines: string[]): PrtfElement[] {
 function parseSingleDdsLine(
     lines: string[],
     lineIndex: number,
-    lastRecord: string,
-    hasFieldInCurrentRecord: boolean
+    lastRecord: string
 ): { element: PrtfElement | undefined; nextIndex: number; lastRecord: string } {
 
     const line = lines[lineIndex];
@@ -207,7 +184,7 @@ function parseSingleDdsLine(
         return { element: undefined, nextIndex: lineIndex, lastRecord };
     };
 
-    return parseAttributeElement(lines, lineIndex, trimmedLine, lineComponents, lastRecord, hasFieldInCurrentRecord, conditionMarker);
+    return parseAttributeElement(lines, lineIndex, trimmedLine, lineComponents, lastRecord, conditionMarker);
 };
 
 /**
@@ -287,16 +264,6 @@ function parseRecordElement(
     // A new record always starts with an explicit absolute position — relative "+n"/blank-row
     // notation is only relative to a preceding field/constant within the same record.
     lastPositionInRecord = undefined;
-
-    records.push(name);
-    fieldsPerRecords.push({
-        record: name,
-        attributes: attributes,
-        fields: [],
-        constants: [],
-        startIndex: lineIndex,
-        endIndex: 0
-    });
 
     const element: PrtfRecord = {
         kind: 'record',
@@ -483,7 +450,6 @@ function parseAttributeElement(
     trimmedLine: string,
     components: any,
     lastRecord: string,
-    hasFieldInCurrentRecord: boolean,
     conditionMarker: string
 ) {
     // Extract with the line's own (unmerged) indicators first — extractAttributes returns an empty
@@ -495,18 +461,9 @@ function parseAttributeElement(
         const indicators = resolveLineIndicators(conditionMarker, components.indicators);
         attributes.forEach(attr => { attr.indicators = indicators; });
 
-        // A keyword-only line with no field/constant seen yet since the record line belongs to the
-        // record itself. linkAttributesToParents() links it into the record element too, but only
-        // after the whole document has been parsed — too late for consumers that need it during
-        // this same pass. syncRecordAttributes() overwrites this with the final, equivalent list
-        // once parsing ends.
-        if (!hasFieldInCurrentRecord && lastRecord) {
-            const currentRecordEntry = fieldsPerRecords.find(r => r.record === lastRecord);
-            if (currentRecordEntry) {
-                currentRecordEntry.attributes = [...(currentRecordEntry.attributes || []), ...attributes];
-            };
-        };
-
+        // Belongs to the record itself (if no field/constant precedes it) or the last field/
+        // constant — linkAttributesToParents(), run once the whole document is parsed, sorts that
+        // out and merges it into the right parent's own `attributes`.
         const maxLastLineIndex = attributes.reduce(
             (max, attr) => Math.max(max, attr.lastLineIndex ?? lineIndex),
             lineIndex
@@ -758,71 +715,6 @@ function resolveFlowModePositions(prtfElements: PrtfElement[]): void {
     };
 };
 
-function linkFieldsAndConstantsToRecords(prtfElements: PrtfElement[]): void {
-    let currentRecord: PrtfRecord | undefined;
-
-    const seenFieldNames = new Map<any, Set<string>>();
-    const seenConstantLines = new Map<any, Set<number>>();
-
-    for (const element of prtfElements) {
-        if (element.kind === 'record') {
-            currentRecord = element;
-            continue;
-        };
-
-        if ((element.kind === 'field' || element.kind === 'constant') && currentRecord) {
-            const recordEntry = fieldsPerRecords.find(r => r.record === currentRecord!.name);
-
-            if (recordEntry) {
-                if (element.kind === 'field') {
-                    let names = seenFieldNames.get(recordEntry);
-                    if (!names) {
-                        names = new Set();
-                        seenFieldNames.set(recordEntry, names);
-                    };
-                    addFieldToRecord(element, recordEntry, names);
-                } else {
-                    let lines = seenConstantLines.get(recordEntry);
-                    if (!lines) {
-                        lines = new Set();
-                        seenConstantLines.set(recordEntry, lines);
-                    };
-                    addConstantToRecord(element, recordEntry, lines);
-                };
-            };
-        };
-    };
-};
-
-function addFieldToRecord(field: any, recordEntry: any, seenFieldNames: Set<string>): void {
-    if (!seenFieldNames.has(field.name)) {
-        seenFieldNames.add(field.name);
-
-        const processedAttributes = field.attributes?.map((attr: any) => ({
-            value: attr.value,
-            indicators: attr.indicators || [],
-            lineIndex: attr.lineIndex,
-            lastLineIndex: attr.lastLineIndex ?? attr.lineIndex
-        })).filter((attr: any) => attr.value) || [];
-
-        recordEntry.fields.push({
-            name: field.name,
-            type: field.type,
-            usage: field.usage,
-            programToSystem: field.programToSystem,
-            row: field.row || 0,
-            col: field.column || 0,
-            length: field.length || 0,
-            decimals: field.decimals,
-            referenced: field.referenced,
-            attributes: processedAttributes,
-            indicators: field.indicators || [],
-            lineIndex: field.lineIndex,
-            lastLineIndex: field.lastLineIndex || field.lineIndex
-        });
-    };
-};
-
 /**
  * Removes quotes from a constant's raw name for storage/length purposes — but only when it's
  * actually a quoted literal (a bare DDS system keyword like DATE/TIME/PAGNBR can be coded
@@ -834,53 +726,7 @@ function stripConstantQuotes(rawName: string): string {
         : rawName;
 };
 
-function addConstantToRecord(constant: any, recordEntry: any, seenLineIndexes: Set<number>): void {
-    const constantName = stripConstantQuotes(constant.name);
-
-    const processedAttributes = constant.attributes?.map((attr: any) => ({
-        value: attr.value,
-        indicators: attr.indicators || [],
-        lineIndex: attr.lineIndex,
-        lastLineIndex: attr.lastLineIndex ?? attr.lineIndex
-    })).filter((attr: any) => attr.value) || [];
-
-    if (!seenLineIndexes.has(constant.lineIndex)) {
-        seenLineIndexes.add(constant.lineIndex);
-        recordEntry.constants.push({
-            name: constantName,
-            row: constant.row || 0,
-            col: constant.column || 0,
-            length: constantName.length,
-            attributes: processedAttributes,
-            indicators: constant.indicators || [],
-            lineIndex: constant.lineIndex,
-            lastLineIndex: constant.lastLineIndex
-        });
-    };
-};
-
-/**
- * Processes file-level attributes (everything coded before the first record). Unlike DSPF, there
- * is no page-size keyword to extract here (PRTF page size/CPI/LPI defaults live on the CRTPRTF
- * command, not in DDS) — this just groups the raw attribute lines for the tree/preview.
- */
-function processFileAttributes(file: PrtfFile, prtfElements: PrtfElement[]): void {
-    if (!file.attributes || file.attributes.length === 0) {return;}
-
-    prtfElements.push({
-        kind: 'group',
-        lineIndex: file.lineIndex,
-        attribute: 'Attributes',
-        attributes: file.attributes,
-        children: []
-    });
-    attributesFileLevel.push(...file.attributes);
-};
-
-/**
- * Assigns endIndex to each record based on the next record's start or EOF. Also updates the
- * FieldsPerRecord mirror.
- */
+/** Assigns endIndex to each record based on the next record's start or EOF. */
 function assignRecordEndIndices(prtfElements: PrtfElement[], totalLines: number): void {
     const recs = (prtfElements.filter(el => el.kind === 'record') as PrtfRecord[])
         .sort((a, b) => a.lineIndex - b.lineIndex);
@@ -888,22 +734,6 @@ function assignRecordEndIndices(prtfElements: PrtfElement[], totalLines: number)
     for (let i = 0; i < recs.length; i++) {
         const rec = recs[i];
         const next = recs[i + 1];
-        const endIdx = next ? next.lineIndex - 1 : totalLines - 1; // inclusive range
-
-        rec.endIndex = endIdx;
-
-        const entry = fieldsPerRecords.find(r => r.record === rec.name);
-        if (entry) {entry.endIndex = endIdx;}
-    };
-};
-
-function syncRecordAttributes(prtfElements: PrtfElement[]): void {
-    const recs = prtfElements.filter(el => el.kind === 'record') as PrtfRecord[];
-
-    for (const rec of recs) {
-        const entry = fieldsPerRecords.find(r => r.record === rec.name);
-        if (entry) {
-            entry.attributes = rec.attributes;
-        };
+        rec.endIndex = next ? next.lineIndex - 1 : totalLines - 1; // inclusive range
     };
 };

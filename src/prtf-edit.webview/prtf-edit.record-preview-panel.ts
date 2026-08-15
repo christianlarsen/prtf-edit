@@ -7,7 +7,7 @@
 import * as vscode from 'vscode';
 import { PrtfElement, PrtfField, PrtfConstant, PrtfRecord, PrtfAttribute, systemKeywordPlaceholder, findTextKeyword } from '../prtf-edit.model/prtf-edit.model';
 import { simulateRecordFlow } from '../prtf-edit.parser/prtf-edit.parser';
-import { revealLine } from '../prtf-edit.utils/prtf-edit.navigation';
+import { ExtensionState } from '../prtf-edit.states/state';
 import { revealInTree } from '../prtf-edit.providers/prtf-edit.providers';
 import { moveElement } from '../prtf-edit.commands/prtf-edit.move-element';
 import { addConstantAt } from '../prtf-edit.commands/prtf-edit.add-constant';
@@ -209,6 +209,25 @@ function getColor(attributes: PrtfAttribute[] | undefined): string | undefined {
 function hasHighlight(itemAttributes: PrtfAttribute[] | undefined, recordAttributes: PrtfAttribute[] | undefined): boolean {
 	const carries = (attrs: PrtfAttribute[] | undefined) => (attrs ?? []).some(attr => /\bHIGHLIGHT\b/i.test(attr.value));
 	return carries(itemAttributes) || carries(recordAttributes);
+};
+
+/**
+ * Builds a one-line column ruler: the 1-based column number, right-aligned so its last digit
+ * lands exactly on that column, every 5 columns — blank everywhere else. Used by the "Ruler"
+ * toggle, alongside a matching row-number gutter, so a field/constant's Line/Position can be read
+ * straight off the page without hovering it (part of what the "+ Constant"/"+ Field" placing
+ * mode and drag already report via the cursor, but useful to see at a glance too).
+ */
+export function buildColumnRuler(cols: number): string {
+	const chars = new Array(cols).fill(' ');
+	for (let col = 5; col <= cols; col += 5) {
+		const label = String(col);
+		const start = col - label.length;
+		for (let i = 0; i < label.length; i++) {
+			if (start + i >= 0) {chars[start + i] = label[i];};
+		};
+	};
+	return chars.join('');
 };
 
 /**
@@ -585,6 +604,13 @@ export class RecordPreviewPanel {
 	 * dragging/editing — e.g. checking a detail row doesn't collide with the header above it.
 	 * Mirrors dspf-edit's own Overlay control. Not offered while composing a sequence. */
 	private overlayRecordName: string | undefined;
+	/** Tracks the "Focus" toggle purely to relabel the button on the next render — the real state
+	 * lives in VS Code's own maximized-editor-group flag (see toggleFocusMode), which this only
+	 * reflects for toggles made through this button. */
+	private focusModeActive = false;
+	/** Tracked so a later full re-render (e.g. from a source edit) doesn't silently turn the ruler
+	 * back off — toggling it doesn't otherwise need a re-render at all, since it's pure CSS. */
+	private showRuler = false;
 	private disposables: vscode.Disposable[] = [];
 
 	public static createOrShow(recordName: string, elements: PrtfElement[]): void {
@@ -604,6 +630,51 @@ export class RecordPreviewPanel {
 		);
 
 		RecordPreviewPanel.current = new RecordPreviewPanel(panel, recordName, elements);
+	};
+
+	/**
+	 * Whether the open preview panel currently has its "focus mode" on (source editor's group
+	 * maximized away). revealInSourceEditor uses this to avoid undoing the maximize just to move
+	 * the cursor.
+	 */
+	public static isFocusModeActive(): boolean {
+		return RecordPreviewPanel.current?.focusModeActive ?? false;
+	};
+
+	/**
+	 * Moves the source editor's cursor/selection to `lineIndex` and reveals it — shared by the
+	 * tree view's click-to-navigate (via prtf-edit.navigation.ts's revealLine) and the preview
+	 * panel's own click-to-navigate, so both land in the editor the same way. When focus mode is
+	 * on, this deliberately skips `vscode.window.showTextDocument` (which would surface the source
+	 * editor's hidden group and undo the maximize) and updates the tracked editor object directly
+	 * instead, so the source is at the right spot whenever focus mode gets turned off. Otherwise
+	 * behaves as a normal "reveal without stealing focus" jump.
+	 * @param lineIndex - Zero-based line index to navigate to
+	 */
+	public static async revealInSourceEditor(lineIndex: number): Promise<void> {
+		const document = ExtensionState.lastPrtfDocument;
+		if (!document) {return;}
+
+		const line = Math.max(0, Math.min(lineIndex, document.lineCount - 1));
+		const position = new vscode.Position(line, 0);
+
+		if (RecordPreviewPanel.isFocusModeActive() && ExtensionState.lastPrtfEditor) {
+			const editor = ExtensionState.lastPrtfEditor;
+			editor.selection = new vscode.Selection(position, position);
+			editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+			return;
+		};
+
+		// Reuse whichever view column the source is already visible in, rather than letting
+		// showTextDocument guess from "the active column" — with focus on a webview (the preview
+		// panel, the tree view), that guess can resolve to the webview's own column and open a
+		// second, unwanted copy of the source there instead of reusing the existing one.
+		const visibleEditor = vscode.window.visibleTextEditors.find(e => e.document === document);
+		const viewColumn = visibleEditor?.viewColumn ?? vscode.ViewColumn.One;
+
+		const editor = await vscode.window.showTextDocument(document, { viewColumn, preserveFocus: true, preview: false });
+		editor.selection = new vscode.Selection(position, position);
+		editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
 	};
 
 	/** Re-renders the currently open preview with freshly parsed elements (e.g. after a source
@@ -648,13 +719,14 @@ export class RecordPreviewPanel {
 		this.render();
 	};
 
-	private onDidReceiveMessage(message: any): void {
+	private async onDidReceiveMessage(message: any): Promise<void> {
 		switch (message.type) {
-			case 'setRecord':
-				this.recordName = message.recordName;
-				this.highlightLineIndex = undefined;
-				this.overlayRecordName = undefined;
-				this.render();
+			case 'toggleFocusMode':
+				await this.toggleFocusMode();
+				break;
+			case 'toggleRuler':
+				this.showRuler = !this.showRuler;
+				this.panel.webview.postMessage({ type: 'rulerChanged', active: this.showRuler });
 				break;
 			case 'setPageSize':
 				this.rows = clampPageSize(message.rows, DEFAULT_ROWS);
@@ -680,7 +752,7 @@ export class RecordPreviewPanel {
 				break;
 			case 'gotoLine':
 				if (typeof message.lineIndex === 'number') {
-					revealLine(message.lineIndex);
+					await RecordPreviewPanel.revealInSourceEditor(message.lineIndex);
 					const target = findElementAtLine(this.elements, message.lineIndex);
 					revealInTree(target?.recordName ?? this.recordName, message.lineIndex);
 				};
@@ -701,6 +773,21 @@ export class RecordPreviewPanel {
 				};
 				break;
 		};
+	};
+
+	/**
+	 * Toggles "focus mode", mirroring dspf-edit's own preview: maximizes the preview's editor
+	 * group so it fills the editing area, hiding the DDS source editor beside it. The Side Bar
+	 * (Definition tree) isn't part of the editor grid, so it stays visible throughout. Uses VS
+	 * Code's own maximize-group state rather than tracking layout ourselves — this only reflects
+	 * toggles made through this button, and only updates the button label, not a full re-render
+	 * (the grid itself doesn't change), so a manual un-maximize elsewhere wouldn't relabel it.
+	 */
+	private async toggleFocusMode(): Promise<void> {
+		this.panel.reveal(undefined, false);
+		await vscode.commands.executeCommand('workbench.action.toggleMaximizeEditorGroup');
+		this.focusModeActive = !this.focusModeActive;
+		this.panel.webview.postMessage({ type: 'focusModeChanged', active: this.focusModeActive });
 	};
 
 	private render(): void {
@@ -724,15 +811,27 @@ export class RecordPreviewPanel {
 	};
 
 	private getHtml(records: PrtfRecord[], items: PageItem[]): string {
-		const options = records
-			.map(r => `<option value="${escapeHtml(r.name)}" ${r.name === this.recordName ? 'selected' : ''}>${escapeHtml(r.name)}</option>`)
-			.join('');
+		// Record names for the "Compose sequence" rows' own selects (built client-side — see
+		// makeSequenceRow) — there's no standalone "which record" selector in the toolbar itself;
+		// the previewed record follows the source cursor / tree selection instead, same as
+		// dspf-edit's own preview.
+		const recordNamesJson = JSON.stringify(records.map(r => r.name));
 
 		const overlayOptions = [`<option value="">(none)</option>`]
 			.concat(records
 				.filter(r => r.name !== this.recordName)
 				.map(r => `<option value="${escapeHtml(r.name)}" ${r.name === this.overlayRecordName ? 'selected' : ''}>${escapeHtml(r.name)}</option>`))
 			.join('');
+
+		// Ruler ("📏 Ruler" toggle): a column-number header (every 5 columns) and a row-number
+		// gutter, both outside `.page` itself (a sibling in the same CSS grid) so toggling them
+		// never touches `.page`'s own markup/padding — and with it, never risks the drag/measure
+		// column math that already had to be hard-won correct once (see measure() below).
+		const rulerLineHtml = escapeHtml(buildColumnRuler(this.cols));
+		const gutterDigits = String(this.rows).length;
+		const gutterCellsHtml = Array.from({ length: this.rows }, (_, i) =>
+			`<div class="pf-gutter-cell">${String(i + 1).padStart(gutterDigits, ' ')}</div>`
+		).join('');
 
 		// One or more stacked "sheets" — more than one only once composed content has actually
 		// rolled past the overflow/page-length threshold (see collectComposedPageItems); outside
@@ -748,7 +847,12 @@ export class RecordPreviewPanel {
 				.map((line, i) => `<div class="pf-line">${renderLineHtml(line, ownerGrid[i], pageItems)}</div>`)
 				.join('');
 			const label = showPageLabels ? `<div class="pf-page-label">Page ${pageNum}</div>` : '';
-			return `<div class="pf-page-group">${label}<div class="page">${rowsHtml}</div></div>`;
+			return `<div class="pf-page-group">${label}<div class="pf-page-grid">` +
+				`<div class="pf-ruler-corner"></div>` +
+				`<div class="pf-ruler-line">${rulerLineHtml}</div>` +
+				`<div class="pf-gutter">${gutterCellsHtml}</div>` +
+				`<div class="page">${rowsHtml}</div>` +
+				`</div></div>`;
 		}).join('');
 
 		return /* html */ `<!DOCTYPE html>
@@ -766,34 +870,46 @@ export class RecordPreviewPanel {
 		padding: 0;
 		margin: 0;
 	}
-	.toolbar {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		padding: 8px 12px;
-		border-bottom: 1px solid #ccc;
+	/* One sticky band (like dspf-edit's own toolbar) containing several stacked rows — grouped by
+	   purpose the same way: an info/Focus row, a "what am I looking at" selectors row, an actions
+	   row, and (only while composing) the sequence editor row. */
+	#toolbarContainer {
 		position: sticky;
 		top: 0;
 		background: #f3f3f3;
+		border-bottom: 1px solid #ccc;
+		padding: 8px 12px;
+		z-index: 10;
 	}
-	.toolbar label {
+	.toolbar-row {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		column-gap: 12px;
+		row-gap: 6px;
+		font-size: 12px;
+	}
+	.toolbar-row:not(:last-child) {
+		margin-bottom: 6px;
+	}
+	.toolbar-row label {
 		display: flex;
 		align-items: center;
 		gap: 4px;
 		font-size: 12px;
 		color: #000000;
 	}
-	.toolbar select, .toolbar input {
+	.toolbar-row select, .toolbar-row input {
 		background: #ffffff;
 		color: #000000;
 		border: 1px solid #999;
 		border-radius: 2px;
 		padding: 2px 4px;
 	}
-	.toolbar input[type=number] {
+	.toolbar-row input[type=number] {
 		width: 4em;
 	}
-	.toolbar button {
+	.toolbar-row button {
 		background: #ffffff;
 		color: #000000;
 		border: 1px solid #999;
@@ -802,15 +918,13 @@ export class RecordPreviewPanel {
 		font-size: 12px;
 		cursor: pointer;
 	}
-	.toolbar button.active {
+	.toolbar-row button.active {
 		background: #337aff;
 		color: #ffffff;
 		border-color: #337aff;
 	}
 	#sequenceBar {
 		display: none;
-		flex-wrap: wrap;
-		border-top: 1px solid #ddd;
 	}
 	#sequenceBar.visible {
 		display: flex;
@@ -878,6 +992,42 @@ export class RecordPreviewPanel {
 		letter-spacing: 0.05em;
 		margin-bottom: 4px;
 	}
+	/* "Ruler" toggle: a column-number header and row-number gutter, laid out as siblings of
+	   .page in a small grid rather than injected into it — .page's own markup/padding never
+	   changes, so the drag/measure column math (which reads .pf-line's own layout) is never at
+	   risk from toggling this on or off. */
+	.pf-page-grid {
+		display: grid;
+		grid-template-columns: max-content max-content;
+	}
+	.pf-ruler-corner, .pf-ruler-line, .pf-gutter {
+		display: none;
+	}
+	.pf-ruler-line {
+		font-family: 'Courier New', monospace;
+		font-size: 13px;
+		white-space: pre;
+		padding: 0 6px;
+		color: #888;
+	}
+	.pf-gutter {
+		flex-direction: column;
+		font-family: 'Courier New', monospace;
+		font-size: 13px;
+		line-height: 1.35;
+		white-space: pre;
+		padding: 4px 6px 4px 0;
+		text-align: right;
+		color: #888;
+		background: #f7f7f7;
+	}
+	#page.pf-ruler-on .pf-ruler-corner,
+	#page.pf-ruler-on .pf-ruler-line {
+		display: block;
+	}
+	#page.pf-ruler-on .pf-gutter {
+		display: flex;
+	}
 	.pf-line {
 		padding: 0 6px;
 	}
@@ -910,91 +1060,48 @@ export class RecordPreviewPanel {
 		z-index: 1000;
 		will-change: transform;
 	}
-	.note {
-		padding: 8px 12px;
-		font-size: 12px;
-		color: #555;
-	}
-	.note summary {
-		cursor: pointer;
-		font-weight: bold;
-		color: #333;
-	}
-	.note ul {
-		margin: 8px 0 0;
-		padding-left: 18px;
-	}
-	.note li {
-		margin-bottom: 6px;
-	}
-	.note li:last-child {
-		margin-bottom: 0;
-	}
 </style>
 </head>
 <body>
-	<div class="toolbar">
-		<label><input type="checkbox" id="composeToggle" ${this.sequence.length > 0 ? 'checked' : ''}> Compose sequence</label>
-		<label id="recordLabel">Record
-			<select id="record">${options}</select>
-		</label>
-		<label id="overlayLabel" title="Show another record dimmed behind this one, as a read-only reference — e.g. to check a detail row doesn't collide with the header above it">Overlay
-			<select id="overlaySelect">${overlayOptions}</select>
-		</label>
-		<label>Rows
-			<input id="rows" type="number" min="1" max="255" value="${this.rows}">
-		</label>
-		<label>Cols
-			<input id="cols" type="number" min="1" max="255" value="${this.cols}">
-		</label>
-		<label id="overflowLabel" title="OVRFLW/page length — when composed content would go past this line, it rolls onto a new page instead">Overflow
-			<input id="overflow" type="number" min="1" max="255" value="${this.overflowLine}">
-		</label>
-		<button id="addConstantBtn" title="Click, then click a point on the page to place a new constant there">+ Constant</button>
-		<button id="addFieldBtn" title="Click, then click a point on the page to place a new field there">+ Field</button>
-	</div>
-	<div class="toolbar" id="sequenceBar">
-		<span id="sequenceRows"></span>
-		<button id="addSequenceRowBtn" title="Add another record format to the composed sequence">+ Row</button>
+	<div id="toolbarContainer">
+		<div id="toolbarRow1" class="toolbar-row">
+			<button id="focusModeBtn" title="Hide the source code editor to focus on the preview (tree view stays visible)">${this.focusModeActive ? '🗗 Show code' : '🗖 Focus'}</button>
+		</div>
+		<div id="toolbarRow2" class="toolbar-row">
+			<label>Rows
+				<input id="rows" type="number" min="1" max="255" value="${this.rows}">
+			</label>
+			<label>Cols
+				<input id="cols" type="number" min="1" max="255" value="${this.cols}">
+			</label>
+			<label id="overflowLabel" title="OVRFLW/page length — when composed content would go past this line, it rolls onto a new page instead">Overflow
+				<input id="overflow" type="number" min="1" max="255" value="${this.overflowLine}">
+			</label>
+			<button id="rulerBtn" class="${this.showRuler ? 'active' : ''}" title="Show row numbers and a column ruler (every 5 columns) alongside the page">📏 Ruler</button>
+			<button id="addConstantBtn" title="Click, then click a point on the page to place a new constant there">+ Constant</button>
+			<button id="addFieldBtn" title="Click, then click a point on the page to place a new field there">+ Field</button>
+		</div>
+		<div id="toolbarRow3" class="toolbar-row">
+			<label id="overlayLabel" title="Show another record dimmed behind this one, as a read-only reference — e.g. to check a detail row doesn't collide with the header above it">Overlay
+				<select id="overlaySelect">${overlayOptions}</select>
+			</label>
+			<label><input type="checkbox" id="composeToggle" ${this.sequence.length > 0 ? 'checked' : ''}> Compose sequence</label>
+		</div>
+		<div id="sequenceBar" class="toolbar-row">
+			<span id="sequenceRows"></span>
+			<button id="addSequenceRowBtn" title="Add another record format to the composed sequence">+ Row</button>
+		</div>
 	</div>
 	<div class="page-wrapper">
-		<div id="page">${pagesHtml}</div>
+		<div id="page" class="${this.showRuler ? 'pf-ruler-on' : ''}">${pagesHtml}</div>
 	</div>
-	<details class="note">
-		<summary>Help</summary>
-		<ul>
-			<li><strong>Fields</strong> show as O (character/date/time) or 6 (numeric) — hover one to see
-			its name (and its TEXT() description, if any). A numeric field with EDTCDE shows its edited
-			worst-case width instead (9s with commas/decimal point/sign, like RLU's own design view).
-			UNDERLINE renders as underline, HIGHLIGHT (field- or record-level) as bold, and COLOR's named
-			colors (BLK/BLU/BRN/GRN/PNK/RED/TRQ/YLW) in that color — the RGB/CMYK/CIELAB/Highlight color
-			models aren't simple enough to map here, so those show in the default color.</li>
-			<li><strong>Editing:</strong> click a field or constant to jump to it in the source; drag it to
-			reposition (rewrites only its Line/Position columns — name, type and keywords stay untouched).
-			"+ Constant" or "+ Field", then click the page, to add a new one there. Moving the cursor in
-			the source highlights it back here. Page size isn't stored in DDS source — set Rows/Cols here
-			to match your CRTPRTF PAGESIZE.</li>
-			<li><strong>Flow-mode records</strong> (positioned via SPACEB/SPACEA/SKIPB/SKIPA, no explicit
-			Line) show as one pass down the page in source order — dragging a field/constant in one only
-			moves it sideways (rewrites Position, not Line), since its row comes from simulating those
-			keywords, not from a Line entry to rewrite.</li>
-			<li><strong>Compose sequence</strong> combines several record formats (with a repeat count
-			each, e.g. a header once and a detail row several times) onto one or more pages, chaining
-			flow-mode records' current line across the whole sequence — editing (drag, "+ Constant"/
-			"+ Field") is unavailable while composing. Overflow (shown only while composing) is the
-			OVRFLW/page-length line — content that would go past it rolls onto a new page, shown as a
-			separate sheet below; a record with the ENDPAGE keyword always starts a new page right after
-			it prints, regardless of Overflow. A row's "repeat per page" checkbox re-prints that record's
-			content at the top of every later page automatically — the usual page-header pattern.</li>
-			<li><strong>Overlay</strong> shows a second record dimmed behind this one, read-only, as a
-			reference while you drag or place things in the active record — e.g. to see whether a detail
-			row would collide with the header above it. Not offered while composing a sequence.</li>
-		</ul>
-	</details>
 	<script>
 		const vscode = acquireVsCodeApi();
-		document.getElementById('record').addEventListener('change', e => {
-			vscode.postMessage({ type: 'setRecord', recordName: e.target.value });
+		document.getElementById('focusModeBtn').addEventListener('click', () => {
+			vscode.postMessage({ type: 'toggleFocusMode' });
+		});
+		document.getElementById('rulerBtn').addEventListener('click', () => {
+			vscode.postMessage({ type: 'toggleRuler' });
 		});
 		document.getElementById('overlaySelect').addEventListener('change', e => {
 			vscode.postMessage({ type: 'setOverlay', recordName: e.target.value || null });
@@ -1017,20 +1124,24 @@ export class RecordPreviewPanel {
 		// "Compose sequence": combine several record formats (each with a repeat count) onto one
 		// page instead of previewing a single one — see collectComposedPageItems.
 		const composeToggle = document.getElementById('composeToggle');
-		const recordLabel = document.getElementById('recordLabel');
 		const overlayLabel = document.getElementById('overlayLabel');
 		const overflowLabel = document.getElementById('overflowLabel');
 		const sequenceBar = document.getElementById('sequenceBar');
 		const sequenceRows = document.getElementById('sequenceRows');
 		const addSequenceRowBtn = document.getElementById('addSequenceRowBtn');
-		const recordOptionsHtml = document.getElementById('record').innerHTML;
+		const recordNames = ${recordNamesJson};
 		const initialSequence = ${JSON.stringify(this.sequence)};
 
 		function makeSequenceRow(recordName, repeat, repeatOnPageBreak) {
 			const row = document.createElement('span');
 			row.className = 'seq-row';
 			const select = document.createElement('select');
-			select.innerHTML = recordOptionsHtml;
+			recordNames.forEach(name => {
+				const option = document.createElement('option');
+				option.value = name;
+				option.textContent = name;
+				select.appendChild(option);
+			});
 			if (recordName) select.value = recordName;
 			const timesLabel = document.createTextNode(' × ');
 			const repeatInput = document.createElement('input');
@@ -1075,11 +1186,9 @@ export class RecordPreviewPanel {
 		});
 
 		function setComposeMode(active) {
-			recordLabel.style.display = active ? 'none' : '';
 			overlayLabel.style.display = active ? 'none' : '';
 			// Overflow/page length only means anything once several record instances are chained
-			// onto a page — the reverse of recordLabel/overlayLabel, which only make sense outside
-			// composition.
+			// onto a page — the reverse of overlayLabel, which only makes sense outside composition.
 			overflowLabel.style.display = active ? '' : 'none';
 			sequenceBar.classList.toggle('visible', active);
 			addConstantBtn.disabled = active;
@@ -1273,6 +1382,15 @@ export class RecordPreviewPanel {
 		};
 		window.addEventListener('message', event => {
 			if (event.data.type === 'highlightLine') applyHighlight(event.data.lineIndex);
+			if (event.data.type === 'focusModeChanged') {
+				const focusModeBtn = document.getElementById('focusModeBtn');
+				focusModeBtn.textContent = event.data.active ? '🗗 Show code' : '🗖 Focus';
+				focusModeBtn.classList.toggle('active', event.data.active);
+			};
+			if (event.data.type === 'rulerChanged') {
+				document.getElementById('page').classList.toggle('pf-ruler-on', event.data.active);
+				document.getElementById('rulerBtn').classList.toggle('active', event.data.active);
+			};
 		});
 		applyHighlight(${JSON.stringify(this.highlightLineIndex ?? null)});
 	</script>

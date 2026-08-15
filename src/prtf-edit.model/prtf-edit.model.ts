@@ -12,8 +12,7 @@ export type PrtfElement =
   | PrtfRecord
   | PrtfAttribute
   | PrtfField
-  | PrtfConstant
-  | PrtfGroup;
+  | PrtfConstant;
 
 /**
  * Represents a general DDS attribute (keyword) line. Stored as raw text (e.g. "SPACEA(1)
@@ -176,66 +175,3 @@ export interface PrtfConstant {
   indicators?: PrtfIndicator[];
 };
 
-/** Attribute group (e.g., "Attributes" node in a tree) */
-export interface PrtfGroup {
-  kind: 'group';
-  children: PrtfElement[];
-  lineIndex: number;
-  attribute: string;
-  attributes?: PrtfAttribute[];
-};
-
-// SIMPLIFIED INFO STRUCTURES (used for tree/preview grouping)
-
-/** Simplified field info (used for reporting/grouping) */
-export interface FieldInfo {
-  name: string;
-  type?: string;
-  usage: string;
-  programToSystem: boolean;
-  row: number;
-  col: number;
-  length: number;
-  decimals?: number;
-  referenced?: boolean;
-  attributes: AttributeWithIndicators[];
-  indicators?: PrtfIndicator[];
-  lineIndex: number;
-  lastLineIndex: number;
-};
-
-/** Simplified constant info */
-export interface ConstantInfo {
-  name: string;
-  row: number;
-  col: number;
-  length: number;
-  attributes: AttributeWithIndicators[];
-  indicators?: PrtfIndicator[];
-  lineIndex: number;
-  lastLineIndex: number;
-};
-
-/** Attribute with indicators info */
-export interface AttributeWithIndicators {
-  value: string;
-  indicators?: PrtfIndicator[];
-  lineIndex: number;
-  lastLineIndex: number;
-};
-
-/** Record container for fields & constants */
-export interface FieldsPerRecord {
-  record: string;
-  attributes?: PrtfAttribute[];
-  fields: FieldInfo[];
-  constants: ConstantInfo[];
-  startIndex: number;
-  endIndex: number;
-};
-
-// GLOBAL DATA ARRAYS
-
-export let records: string[] = [];
-export let fieldsPerRecords: FieldsPerRecord[] = [];
-export let attributesFileLevel: PrtfAttribute[] = [];

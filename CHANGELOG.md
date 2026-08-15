@@ -225,3 +225,71 @@
   both the overflow and `ENDPAGE` roll-over paths, so the two stay in sync automatically. Validated
   against a header marked to repeat with ten detail-row repeats forcing two pages: the header's
   own field appears once per page, right above the continuing detail rows on each.
+- Housekeeping pass: removed a whole parallel data mirror (`records`, `fieldsPerRecords`,
+  `attributesFileLevel` global arrays, the `FieldInfo`/`ConstantInfo`/`AttributeWithIndicators`/
+  `FieldsPerRecord` types, and the parser functions that only existed to populate them —
+  `linkFieldsAndConstantsToRecords`, `addFieldToRecord`, `addConstantToRecord`,
+  `processFileAttributes`, `syncRecordAttributes`) that dated back to mirroring dspf-edit's
+  original structure but nothing in prtf-edit — the tree, the preview, the commands — ever
+  actually read; the flat `PrtfElement[]` array from `parseDocument` turned out to be all any of
+  them needed. Also removed `currentPrtfElements` (assigned, never read) and the unused `PrtfGroup`
+  model type/union member it was the only producer of, and `ExtensionState.lastPrtfEditor` (written
+  on every editor change, never read anywhere). `assignRecordEndIndices` keeps only the half of it
+  that's actually live (`PrtfRecord.endIndex`, used by "+ Constant"/"+ Field" to find where to
+  insert). Confirmed via full-project grep that nothing referenced any of it, and the entire
+  regression suite (17 scripts) still passes unchanged. Also refreshed README.md's "Status" line
+  and two "Key findings" entries, which had been left describing the project as it stood before
+  Fase 3 (before the preview existed at all) and before Fase 6c respectively.
+- Reorganized the preview toolbar into stacked rows, mirroring dspf-edit's own preview layout:
+  an info/Focus row, a "what am I looking at" selectors row (Compose sequence, Record, Overlay),
+  an actions row (Rows/Cols/Overflow, "+ Constant"/"+ Field"), and the sequence editor row (shown
+  only while composing) — instead of one wide flex row that wrapped unpredictably as controls were
+  added over several iterations. Added a "Focus" button, ported directly from dspf-edit's own
+  implementation: maximizes the preview's editor group (`workbench.action.toggleMaximizeEditorGroup`)
+  so it fills the editing area, hiding the DDS source editor beside it — the Definition tree isn't
+  part of the editor grid, so it stays visible — and toggles to "Show code" to bring the split view
+  back. (dspf-edit doesn't have a separate "View Source" button; Focus/Show code, the same button
+  in its two states, is that mechanism.) Unlike dspf-edit — which sets the webview's HTML once and
+  pushes all later updates via postMessage — this preview rebuilds its HTML on every render, so the
+  focus state is threaded into the template itself (not just handled via postMessage) to survive
+  an unrelated re-render (e.g. a source edit) without the button relabeling itself back to "Focus"
+  while the editor group is still actually maximized.
+- Simplified the preview toolbar per feedback: row 1 now holds only the "Focus" button (dropped
+  the record name/page size info text); the standalone "Record" selector is gone entirely — the
+  previewed record now follows the source cursor or a Definition tree selection, same as
+  dspf-edit's own preview (which has no such selector either). "Compose sequence" still lets you
+  pick specific records, via each sequence row's own select (now built from a small
+  server-injected record-name list instead of cloning the removed selector's options). Reordered
+  the remaining rows so Record-adjacent selectors (Overlay, Compose sequence — Compose last within
+  its row) sit at the bottom, below the actions row, so turning "Compose sequence" on only adds
+  content below everything else instead of shifting rows above it.
+- Fixed: turning "Focus" on (maximizing the preview's editor group, hiding the DDS source editor)
+  and then clicking a Definition tree node brought the source editor back — because tree-click
+  navigation went through `vscode.window.showTextDocument`, which surfaces whatever view column
+  it's asked to show, undoing the maximize just to move the cursor. Ported the fix from dspf-edit
+  verbatim: a new `RecordPreviewPanel.revealInSourceEditor` (mirroring dspf-edit's own
+  `revealInSourceEditor`) checks `isFocusModeActive()` first and, when it's on, updates the tracked
+  source editor object's `.selection`/`.revealRange()` directly instead of calling
+  `showTextDocument` — so the cursor moves without surfacing the hidden group. Needed
+  `ExtensionState.lastPrtfEditor` back (the tracked-editor field removed as dead code in the
+  housekeeping pass two entries up) — this time actually wired to a real consumer, matching
+  dspf-edit's own `lastDdsEditor`. `prtf-edit.navigation.ts`'s `revealLine` (used by the tree
+  view's own click handler) is now a thin wrapper delegating to this same method, so both
+  navigation paths behave identically; the preview panel's own click-to-navigate calls it directly
+  (dropped its `revealLine` import — the two modules now depend on each other only inside function
+  bodies, which is fine for a same-process VS Code extension, and confirmed to resolve correctly
+  by requiring both compiled modules directly).
+- Removed the "Help" collapsible from the preview — decided it wasn't earning its keep.
+- Added a "📏 Ruler" toggle to the preview toolbar, in the spirit of dspf-edit's own "Grid" button
+  but showing row numbers and a column ruler (the column number every 5 columns) instead of a dot
+  grid — so a field's Line/Position can be read straight off the page. New `buildColumnRuler(cols)`
+  builds the ruler text; the row-number gutter is built alongside it in `getHtml`. Both render as
+  siblings of `.page` in a small CSS grid (auto-collapsing to just `.page` when the toggle is off),
+  never injected into `.page` itself — toggling them can't touch the drag/measure column math,
+  which reads `.pf-line`'s own layout and already had to be hard-won correct once. Verified this
+  holds even with the ruler on: `measure()` re-derives `padLeft`/`padTop` fresh from a live probe
+  relative to `#page`'s current bounding box on every drag, rather than assuming a fixed offset, so
+  it self-corrects for the wider/taller `#page` box the ruler adds. Tracked server-side (like
+  "Focus") only so the toggle survives a re-render; the toggle itself is pure CSS, no
+  recomputation needed. Validated the ruler text's alignment (e.g. "10" ends exactly at column 10)
+  and the generated markup's tag balance against a real grid.

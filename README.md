@@ -5,7 +5,11 @@ VS Code extension to create and modify DDS **printer files** (PRTF) on IBM i —
 and, where it makes sense, its patterns and code.
 
 Status: parses PRTF source into records/fields/constants and shows them in a live "Definition" tree
-view (click a node to jump to its source line). No preview yet — that's Fase 3.
+view (click a node to jump to its source line). A page-layout preview renders a record's fields/
+constants on a character grid — click to navigate, drag to reposition, "+ Constant"/"+ Field" to
+add new ones, an "Overlay" to check one record against another, and a "Compose sequence" mode to
+combine several record formats (with repeat counts and automatic multi-page pagination) into one
+simulated report. See the Roadmap below for what's done.
 
 ## Why a separate project instead of extending dspf-edit
 
@@ -26,8 +30,9 @@ painful.
       See "Confirmed column layout" and "Key findings" below.
 - [x] Fase 1 — Parser + model: fixed-column tokenizer, record/field/constant tree, line/position
       resolution. Validated against a real-world PRTF example (see `CHANGELOG.md`). SPACE/SKIP flow
-      mode isn't normalized to absolute coordinates yet — deferred to Fase 3, since real-world PRTF
-      source overwhelmingly uses explicit Line/Position (same style as DSPF).
+      mode wasn't normalized to absolute coordinates yet at this point — real-world PRTF source
+      overwhelmingly uses explicit Line/Position (same style as DSPF), so that was deferred until
+      Fase 6a.
 - [x] Fase 2 — Definition tree view wired to the real parser: Records > (Attributes, Fields and
       Constants) > (Indicators, Attributes), click-to-navigate to the source line.
 - [x] Fase 3 — Preview, read-only: one page, one record, via the record's inline preview icon in
@@ -45,7 +50,8 @@ painful.
       A toolbar "+ Constant" button arms a placing mode (crosshair cursor); the next click on the
       page adds a new constant there (prompts for the text, splitting it across DDS's own
       keyword-continuation convention — a trailing '-' — when it doesn't fit one line's 36-column
-      keyword zone) — same click-to-place mechanism dspf-edit's own preview uses. A "+ Field" button reuses the identical mechanism, chaining
+      keyword zone) — same click-to-place mechanism dspf-edit's own preview uses. A "+ Field"
+      button reuses the identical mechanism, chaining
       prompts for name (validated, no duplicates), type (A/S/L/T/Z — the v1 keyword scope), and
       length/decimals where applicable (blank/derived for L/T/Z, per DATFMT/TIMFMT defaults).
       Diagnostics (Problems panel): flags a record format that mixes explicit Line numbers with a
@@ -107,26 +113,28 @@ Identical to DSPF for positions 1-44 except where noted — same tokenizer appli
 
 1. **Two mutually exclusive layout modes per record format.** Either every field on the record
    gets an explicit Line (39-41), or none do and layout flows via SKIPB/SPACEB/SKIPA/SPACEA plus
-   source order — mixing the two within one record format is invalid. In practice most real-world
-   PRTF source (see example below) uses the absolute-line style almost identically to DSPF, so the
-   parser/preview can treat that as the common case and treat SPACE/SKIP-driven flow as a
-   normalization pass that resolves to the same absolute (line, col) model before rendering.
+   source order — mixing the two within one record format is invalid (confirmed against a real
+   CRTPRTF joblog: CPD5238/CPD7826/CPD7860 — see `prtf-edit.validation`). In practice most
+   real-world PRTF source uses the absolute-line style almost identically to DSPF, so the
+   parser/preview treats that as the common case, and normalizes SPACE/SKIP-driven flow to the
+   same absolute (line, col) model before rendering (Fase 6a).
 2. **Page size is not in the DDS source.** Unlike DSPF's `DSPSIZ` keyword, there is no PRTF DDS
    keyword for page length/width — those come from the `PAGESIZE` parameter on the `CRTPRTF` /
    `CHGPRTF` / `OVRPRTF` commands (same for `OVRFLW`, and the default CPI/LPI/FONT). DDS-level `CPI`
    and `LPI` keywords can *override* the file-level default per record, but there's no default in
-   the source itself. **Open question for Fase 3**: default to common values (e.g. 66 lines ×
-   132/198 chars), let the user set page size/CPI/LPI in the preview toolbar, and/or query the
-   actual `CRTPRTF` attributes via SQL (`QSYS2`) when connected — needs a decision before building
-   the preview.
+   the source itself. **Resolved in Fase 3/6c**: Rows/Cols/Overflow are editable fields in the
+   preview's own toolbar (defaulting to 66 lines × 132 chars), set to match whatever the real
+   `CRTPRTF PAGESIZE`/`OVRFLW` values are — not queried automatically.
 3. **v1 keyword scope** (SCS/base — excludes the large *AFPDS-only graphics surface: AFPRSC, BOX,
-   LINE, GDF, OVERLAY, PAGSEG, POSITION, barcodes, fonts/CDEFNT/FNTCHRSET, color, DBCS): `SKIPB`,
-   `SKIPA`, `SPACEB`, `SPACEA`, `EDTCDE`, `EDTWRD`, `DATE`, `TIME`, `PAGNBR`, `DFT`, `REF`,
-   `REFFLD`, `DLTEDT`, `TEXT`, indicators. `PRTQLTY`/`LPI`/`CPI`/`DUPLEX`/`DRAWER`/`OUTBIN` are
-   cheap to support alongside since they're simple value keywords with no layout impact.
+   LINE, GDF, OVERLAY, PAGSEG, POSITION, barcodes, fonts/CDEFNT/FNTCHRSET, DBCS): `SKIPB`, `SKIPA`,
+   `SPACEB`, `SPACEA`, `EDTCDE`, `EDTWRD`, `DATE`, `TIME`, `PAGNBR`, `DFT`, `REF`, `REFFLD`,
+   `DLTEDT`, `TEXT`, `UNDERLINE`, `HIGHLIGHT`, `COLOR` (named-color form only — RGB/CMYK/CIELAB/
+   Highlight color models aren't rendered), `ENDPAGE`, indicators. `PRTQLTY`/`LPI`/`CPI`/`DUPLEX`/
+   `DRAWER`/`OUTBIN` are cheap to support alongside since they're simple value keywords with no
+   layout impact, but aren't specifically handled yet.
 4. **Position 38 `P` (program-to-system) fields never print** — they only pass values into other
    keywords' parameters at runtime (e.g. `AFPRSC`'s resource-name, `BARCODE`'s PDF417 macro data).
-   The model needs a flag for this so the preview knows to skip rendering them.
+   `PrtfField.programToSystem` flags this so the preview skips rendering them.
 
 ## Development
 
