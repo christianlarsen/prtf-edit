@@ -13,6 +13,7 @@ import { moveElement } from '../prtf-edit.commands/prtf-edit.move-element';
 import { addConstantAt } from '../prtf-edit.commands/prtf-edit.add-constant';
 import { addFieldAt } from '../prtf-edit.commands/prtf-edit.add-field';
 import { editSpacing } from '../prtf-edit.commands/prtf-edit.edit-spacing';
+import { deleteElement } from '../prtf-edit.commands/prtf-edit.delete-element';
 
 /** Default page size (66 lines is the traditional 11" @ 6 LPI page; 132 columns is 10 CPI on
  * standard wide computer paper — both just starting points, editable in the toolbar). */
@@ -775,6 +776,12 @@ export class RecordPreviewPanel {
 					editSpacing(message.lineIndex);
 				};
 				break;
+			case 'deleteItem':
+				if (this.sequence.length === 0 && this.highlightLineIndex !== undefined) {
+					await deleteElement(this.highlightLineIndex);
+					this.highlightLineIndex = undefined;
+				};
+				break;
 			case 'addConstantAt':
 				if (this.sequence.length === 0 && typeof message.row === 'number' && typeof message.col === 'number') {
 					addConstantAt(this.recordName, message.row, message.col, this.rows, this.cols);
@@ -1093,6 +1100,7 @@ export class RecordPreviewPanel {
 			<button id="rulerBtn" class="${this.showRuler ? 'active' : ''}" title="Show row numbers and a column ruler (every 5 columns) alongside the page">📏 Ruler</button>
 			<button id="addConstantBtn" title="Click, then click a point on the page to place a new constant there">+ Constant</button>
 			<button id="addFieldBtn" title="Click, then click a point on the page to place a new field there">+ Field</button>
+			<button id="deleteItemBtn" ${this.highlightLineIndex === undefined ? 'disabled' : ''} title="Click a field/constant on the page first, then this to delete it entirely">🗑 Delete</button>
 		</div>
 		<div id="toolbarRow3" class="toolbar-row">
 			<label id="overlayLabel" title="Show another record dimmed behind this one, as a read-only reference — e.g. to check a detail row doesn't collide with the header above it">Overlay
@@ -1133,6 +1141,12 @@ export class RecordPreviewPanel {
 
 		const addConstantBtn = document.getElementById('addConstantBtn');
 		const addFieldBtn = document.getElementById('addFieldBtn');
+		const deleteItemBtn = document.getElementById('deleteItemBtn');
+		let currentHighlightLine = ${JSON.stringify(this.highlightLineIndex ?? null)};
+		function refreshDeleteButtonState() {
+			deleteItemBtn.disabled = composeToggle.checked || currentHighlightLine === null || currentHighlightLine === undefined;
+		};
+		deleteItemBtn.addEventListener('click', () => vscode.postMessage({ type: 'deleteItem' }));
 
 		// "Compose sequence": combine several record formats (each with a repeat count) onto one
 		// page instead of previewing a single one — see collectComposedPageItems.
@@ -1206,6 +1220,7 @@ export class RecordPreviewPanel {
 			sequenceBar.classList.toggle('visible', active);
 			addConstantBtn.disabled = active;
 			addFieldBtn.disabled = active;
+			refreshDeleteButtonState();
 		};
 
 		composeToggle.addEventListener('change', () => {
@@ -1396,6 +1411,8 @@ export class RecordPreviewPanel {
 
 		function applyHighlight(lineIndex) {
 			document.querySelectorAll('.pf-highlight').forEach(el => el.classList.remove('pf-highlight'));
+			currentHighlightLine = lineIndex;
+			refreshDeleteButtonState();
 			if (lineIndex === null || lineIndex === undefined) return;
 			document.querySelectorAll('[data-line="' + lineIndex + '"]').forEach(el => el.classList.add('pf-highlight'));
 		};

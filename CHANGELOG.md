@@ -383,3 +383,22 @@
   SKIPB preserves the record's exact layout regardless of order. Verified against a record with
   rows deliberately out of source order (5, 12, 8) — each kept its own row after conversion.
   Declining the prompt falls back to the original one-item-at-a-time behaviour.
+- Added a "🗑 Delete" button to the preview toolbar (`prtf-edit.delete-element.ts`, `deleteElement`):
+  click a field/constant on the page to select it (the existing click-to-navigate highlight), then
+  the button deletes its entire source block — name, type, keywords, colors, underline, text,
+  spacing, everything — the same "full block" concept the flow-mode swap already uses
+  (`findBlockEndLineIndex`). Disabled until something's selected, and while composing a sequence,
+  same as the other mutating actions.
+  For a flow-mode item, deleting it can shift the next field/constant (and everything chained
+  after it) up, since that item's own row is measured from wherever the deleted one left off — not
+  just its SPACEA/SKIPA, but *any* contribution it made, including the implicit "never below line
+  1" floor a bare item gets with no keyword at all (confirmed this actually matters with a
+  dedicated test: a first item with only SPACEA(4) and no keyword of its own still occupies line 1
+  via that floor, so naively transferring just the SPACEA value would have undershot by exactly the
+  1 line the floor was quietly contributing). Rather than reverse-engineer which case applies, this
+  re-simulates the record without the item (`simulateRecordFlow` already does the real math) and
+  compares the next item's row before and after — if it would move, offers to anchor that item to
+  its *current* row via its own SKIPB (an absolute jump is exactly correct regardless of what
+  caused the old gap), via a modal warning naming the exact row shift. Only offered when the next
+  item has no before-keyword of its own yet; if it already has one, or there's no next item, or
+  nothing would actually move, deletion proceeds without a prompt.
