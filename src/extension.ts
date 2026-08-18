@@ -14,6 +14,9 @@ import { registerEditIndicatorsCommand } from './prtf-edit.commands/prtf-edit.ed
 import { registerRecordCrudCommands } from './prtf-edit.commands/prtf-edit.record-crud';
 import { registerCopyElementCommand } from './prtf-edit.commands/prtf-edit.copy-element';
 import { registerDeleteElementCommand } from './prtf-edit.commands/prtf-edit.delete-element';
+import { registerRenameCommands } from './prtf-edit.commands/prtf-edit.rename-element';
+import { registerEditConstantTextCommand } from './prtf-edit.commands/prtf-edit.edit-constant-text';
+import { registerFillConstantCommand } from './prtf-edit.commands/prtf-edit.fill-constant';
 import { revealLine } from './prtf-edit.utils/prtf-edit.navigation';
 import { RecordPreviewPanel } from './prtf-edit.webview/prtf-edit.record-preview-panel';
 
@@ -57,6 +60,9 @@ export function activate(context: vscode.ExtensionContext) {
 	registerRecordCrudCommands(context);
 	registerCopyElementCommand(context);
 	registerDeleteElementCommand(context);
+	registerRenameCommands(context);
+	registerEditConstantTextCommand(context);
+	registerFillConstantCommand(context);
 	initializeDocumentListeners(context, treeProvider);
 };
 

@@ -8,7 +8,7 @@ import * as vscode from 'vscode';
 import { ExtensionState } from '../prtf-edit.states/state';
 import { PrtfRecord } from '../prtf-edit.model/prtf-edit.model';
 import { PrtfNode } from '../prtf-edit.providers/prtf-edit.providers';
-import { NAME_PATTERN } from './prtf-edit.add-field';
+import { NAME_PATTERN, renameNameZone } from './prtf-edit.add-field';
 
 /** A bare record-format line: form type 'A' (col 6), blank indicators (cols 7-16), name type 'R'
  * (col 17), blank reserved (col 18), name (cols 19-28) — see "Confirmed column layout" in the
@@ -17,19 +17,10 @@ function buildRecordLine(name: string): string {
 	return ' '.repeat(5) + 'A' + ' '.repeat(10) + 'R' + ' ' + name.padEnd(10);
 };
 
-/**
- * Rewrites just a record line's own name zone (columns 19-28), leaving everything else —
- * including any record-level keywords already coded past column 44 (HIGHLIGHT, SKIPB(n),
- * ENDPAGE, ...) — untouched. Same "surgical column rewrite" approach as move-element.ts's
- * buildRepositionedColumnOnly, used by copyRecordFromNode so a copy doesn't silently drop the
- * original's own record-level attributes.
- */
-function renameRecordLine(originalLine: string, newName: string): string {
-	const padded = originalLine.length < 28 ? originalLine.padEnd(28) : originalLine;
-	return padded.substring(0, 18) + newName.padEnd(10) + padded.substring(28);
-};
-
-function existingRecordNames(): Set<string> {
+/** Every record format name already in the document, uppercased — used both to reject a
+ * duplicate when creating/copying/renaming one, and (by rename-element.ts) minus the item's own
+ * current name, to allow renaming it back to itself. */
+export function existingRecordNames(): Set<string> {
 	return new Set(
 		ExtensionState.lastPrtfElements
 			.filter((e: any) => e.kind === 'record')
@@ -37,10 +28,11 @@ function existingRecordNames(): Set<string> {
 	);
 };
 
-/** Shared validated-name prompt for both addRecord and copyRecordFromNode — same DDS identifier
- * rules as a field name (add-field.ts's NAME_PATTERN), but uniqueness is checked document-wide
- * (record format names, unlike field names, aren't scoped to one record). */
-async function promptForRecordName(promptText: string, existingNames: Set<string>): Promise<string | undefined> {
+/** Shared validated-name prompt for addRecord, copyRecordFromNode, and (rename-element.ts's)
+ * renameRecordFromNode — same DDS identifier rules as a field name (add-field.ts's NAME_PATTERN),
+ * but uniqueness is checked document-wide (record format names, unlike field names, aren't scoped
+ * to one record). */
+export async function promptForRecordName(promptText: string, existingNames: Set<string>): Promise<string | undefined> {
 	const input = await vscode.window.showInputBox({
 		prompt: promptText,
 		placeHolder: 'RECORDNAME',
@@ -112,7 +104,7 @@ export async function deleteRecordFromNode(node: PrtfNode): Promise<void> {
 
 /** Duplicates a record format's entire block (name line through PrtfRecord.endIndex) under a new
  * name, appended at the end of the document — same insertion point as addRecord. Only the name
- * zone of the first line is rewritten (renameRecordLine); every field, constant, and keyword —
+ * zone of the first line is rewritten (renameNameZone); every field, constant, and keyword —
  * including the original's own record-level attributes, if any — is copied verbatim. */
 export async function copyRecordFromNode(node: PrtfNode): Promise<void> {
 	if (!node || node.source.kind !== 'record') {return;}
@@ -129,7 +121,7 @@ export async function copyRecordFromNode(node: PrtfNode): Promise<void> {
 	for (let i = record.lineIndex; i <= endIndex; i++) {
 		blockLines.push(document.lineAt(i).text);
 	};
-	blockLines[0] = renameRecordLine(blockLines[0], newName);
+	blockLines[0] = renameNameZone(blockLines[0], newName);
 
 	const insertPosition = document.lineAt(document.lineCount - 1).range.end;
 	const edit = new vscode.WorkspaceEdit();

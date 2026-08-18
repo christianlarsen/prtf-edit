@@ -70,6 +70,15 @@ export function buildFieldLine(name: string, type: string, length: number, decim
 
 export const NAME_PATTERN = /^[A-Z@#$][A-Z0-9@#$]{0,9}$/;
 
+/** Rewrites just a field's or record's own name zone (columns 19-28), leaving everything else on
+ * the line — type/length/decimals/Line/Position for a field, any record-level keywords past
+ * column 44 for a record — untouched. Both share the same zone/width; used by New/Copy/Rename for
+ * either kind. */
+export function renameNameZone(originalLine: string, newName: string): string {
+	const padded = originalLine.length < 28 ? originalLine.padEnd(28) : originalLine;
+	return padded.substring(0, 18) + newName.padEnd(10) + padded.substring(28);
+};
+
 /**
  * Adds a new field to a record at the given (row, col) — used by the preview's "+ Field" placing
  * mode. Chains a few prompts (name, type, size) rather than a custom form, same shape as

@@ -11,20 +11,14 @@
      A                                  4  1DATE(*SYS *YY) EDTCDE(Y)
      A                                  4 70'Pagina:'
      A                                    +1PAGNBR
-     A                                  6  1'CODIGO'
+     A                                  6  1'CODIGO    '
      A                                      UNDERLINE
-     A                                  6 13'DESCRIPCION'
+     A                                  6 13'DESCRIPCION                   '
      A                                      UNDERLINE
-     A                                  6 54'CANTIDAD'
+     A                                  6 54'CANTIDAD  '
      A                                      UNDERLINE
-     A                                  6 66'IMPORTE'
+     A                                  6 66'IMPORTE      '
      A                                      UNDERLINE
-     A                                  7  1'----------------------------------'
-     A* 
-     A* DETALLE: sin Line explicito, avanza una fila por escritura via
-     A* SPACEA(1) a nivel record. Compose sequence la coloca justo debajo de
-     A* CABECERA (fila 8) sin necesidad de SKIPB.
-     A* 
      A          R DETALLE                   SPACEA(1)
      A            CODIGO        10A  O     1
      A            DESCRIPCIO    30A  O    +2

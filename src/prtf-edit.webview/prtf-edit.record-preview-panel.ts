@@ -162,11 +162,15 @@ export function parseEdtcde(attributes: PrtfAttribute[] | undefined): { code: st
  * positive values), never larger, so this is the right shape to check for overlap against.
  * Returns undefined when there's no EDTCDE, or it's a user-defined code (5-9) whose editing comes
  * from a CRTEDTD object we have no way to resolve here — those fall back to the plain placeholder.
+ * Also reused by fill-constant.ts, unconditionally on the field's own attributes (not gated by any
+ * live indicator-simulation state — a "reference width" lookup sizes for the widest an
+ * EDTCDE-conditioned field could ever print, the same conservative reasoning as everywhere else
+ * this function is used).
  * @param activeAttributes - The field's own attributes, already filtered down to whichever are
  *   currently indicator-active (see isItemDisplayed) — so a conditionally-applied EDTCDE is only
  *   honored when its own condition is currently met.
  */
-function editedNumericPlaceholder(field: PrtfField, activeAttributes: PrtfAttribute[]): string | undefined {
+export function editedNumericPlaceholder(field: PrtfField, activeAttributes: PrtfAttribute[]): string | undefined {
 	const edtcde = parseEdtcde(activeAttributes);
 	if (!edtcde) {return undefined;};
 	const info = EDIT_CODES[edtcde.code];
@@ -906,9 +910,22 @@ export class RecordPreviewPanel {
 					this.panel.webview.postMessage({ type: 'highlightLine', lineIndex: this.highlightLineIndex ?? null });
 				};
 				break;
+			case 'deselect':
+				// Clicking blank space on the page (not on any field/constant) clears the selection,
+				// same as dspf-edit — the client already removed the highlight class itself; this just
+				// keeps the server's own idea of the selection (used by deleteItem/editAttributes, and
+				// preserved across re-renders) in sync with it.
+				this.highlightLineIndex = undefined;
+				break;
 			case 'moveItem':
 				if (this.sequence.length === 0 && typeof message.lineIndex === 'number' && typeof message.newRow === 'number' && typeof message.newCol === 'number') {
-					moveElement(message.lineIndex, message.newRow, message.newCol, this.rows, this.cols, Boolean(message.flow));
+					// Gate flow-mode baseline math by the same live indicator-simulation state the
+					// page is currently rendered with (see resolveFlowModeMove's own doc comment) —
+					// otherwise a preceding item's indicator-conditioned SPACEB/SPACEA/SKIPB/SKIPA
+					// would silently disagree with the row the user is actually dragging within.
+					const liveIndicators = this.indicatorsEnabled ? this.activeIndicators : new Set<number>();
+					const isAttributeActive = (attr: PrtfAttribute) => isItemDisplayed(attr.indicators, liveIndicators);
+					moveElement(message.lineIndex, message.newRow, message.newCol, this.rows, this.cols, Boolean(message.flow), isAttributeActive);
 				};
 				break;
 			case 'editSpacing':
@@ -996,6 +1013,14 @@ export class RecordPreviewPanel {
 			? [...new Set(this.sequence.map(entry => entry.recordName).filter(Boolean))]
 			: [this.recordName].filter(Boolean);
 		const availableIndicatorNumbers = collectIndicatorNumbers(this.elements, indicatorRecordNames);
+		const hasIndicators = availableIndicatorNumbers.length > 0;
+		if (!hasIndicators && this.indicatorsEnabled) {
+			// Nothing left to simulate (e.g. the last indicator-conditioned keyword in this record
+			// was just dragged/edited away) — the "Indicators" control itself is about to stop being
+			// rendered at all, so its state shouldn't linger checked for whenever one reappears.
+			this.indicatorsEnabled = false;
+			this.activeIndicators = new Set();
+		};
 		const indicatorButtonsHtml = this.indicatorsEnabled
 			? availableIndicatorNumbers.map(n =>
 				`<button type="button" class="indicator-btn${this.activeIndicators.has(n) ? ' active' : ''}" data-indicator="${n}">${n}</button>`
@@ -1078,6 +1103,10 @@ export class RecordPreviewPanel {
 		font-size: 12px;
 		color: #000000;
 	}
+	#sizeLabel {
+		font-weight: 600;
+		color: #000000;
+	}
 	.toolbar-row select, .toolbar-row input {
 		background: #ffffff;
 		color: #000000;
@@ -1112,13 +1141,23 @@ export class RecordPreviewPanel {
 		cursor: not-allowed;
 		opacity: 0.6;
 	}
-	/* "Indicators" toggle's per-number buttons — tighter than a regular toolbar button since there
-	   can be many (one per indicator actually referenced in the record). Reuses the same
-	   .active styling every other armed/on toolbar button already has. */
+	/* "Indicators" toggle's per-number buttons, on their own row (5) — tighter than a regular
+	   toolbar button since there can be many (one per indicator actually referenced in the
+	   record). Styled like an LED, dspf-edit's own convention: dimmed/off by default, lit green
+	   once toggled on, rather than reusing the plain blue .active look every other toolbar
+	   toggle button has. */
 	.indicator-btn {
 		padding: 1px 6px;
 		min-width: 1.6em;
 		text-align: center;
+		background: #eeeeee;
+		color: #aaaaaa;
+		border: 1px solid #cccccc;
+	}
+	.indicator-btn.active {
+		background: #22c55e;
+		color: #000000;
+		border-color: #22c55e;
 	}
 	#sequenceBar {
 		display: none;
@@ -1269,6 +1308,7 @@ export class RecordPreviewPanel {
 			<button id="focusModeBtn" title="Hide the source code editor to focus on the preview (tree view stays visible)">${this.focusModeActive ? '🗗 Show code' : '🗖 Focus'}</button>
 		</div>
 		<div id="toolbarRow2" class="toolbar-row">
+			<span id="sizeLabel">Size:</span>
 			<label>Rows
 				<input id="rows" type="number" min="1" max="255" value="${this.rows}">
 			</label>
@@ -1278,24 +1318,26 @@ export class RecordPreviewPanel {
 			<label id="overflowLabel" title="OVRFLW/page length — when composed content would go past this line, it rolls onto a new page instead">Overflow
 				<input id="overflow" type="number" min="1" max="255" value="${this.overflowLine}">
 			</label>
-			<button id="rulerBtn" class="${this.showRuler ? 'active' : ''}" title="Show row numbers and a column ruler (every 5 columns) alongside the page">📏 Ruler</button>
-			<button id="addConstantBtn" title="Click, then click a point on the page to place a new constant there">+ Constant</button>
-			<button id="addFieldBtn" title="Click, then click a point on the page to place a new field there">+ Field</button>
-			<button id="deleteItemBtn" ${this.highlightLineIndex === undefined ? 'disabled' : ''} title="Click a field/constant on the page first, then this to delete it entirely">🗑 Delete</button>
-			<button id="attributesBtn" ${this.highlightLineIndex === undefined ? 'disabled' : ''} title="Click a field/constant on the page first, then this to set TEXT/COLOR/HIGHLIGHT/UNDERLINE/EDTCDE">🎨 Attributes</button>
-		</div>
-		<div id="toolbarRow3" class="toolbar-row">
 			<label id="overlayLabel" title="Show another record dimmed behind this one, as a read-only reference — e.g. to check a detail row doesn't collide with the header above it">Overlay
 				<select id="overlaySelect">${overlayOptions}</select>
 			</label>
-			<label><input type="checkbox" id="composeToggle" ${this.sequence.length > 0 ? 'checked' : ''}> Compose sequence</label>
+		</div>
+		<div id="toolbarRow3" class="toolbar-row">
+			<button id="addFieldBtn" title="Click, then click a point on the page to place a new field there">+ Field</button>
+			<button id="addConstantBtn" title="Click, then click a point on the page to place a new constant there">+ Constant</button>
+			<button id="rulerBtn" class="${this.showRuler ? 'active' : ''}" title="Show row numbers and a column ruler (every 5 columns) alongside the page">📏 Ruler</button>
+			<button id="deleteItemBtn" ${this.highlightLineIndex === undefined ? 'disabled' : ''} title="Click a field/constant on the page first, then this to delete it entirely">🗑 Delete</button>
+			<button id="attributesBtn" ${this.highlightLineIndex === undefined ? 'disabled' : ''} title="Click a field/constant on the page first, then this to set TEXT/COLOR/HIGHLIGHT/UNDERLINE/EDTCDE">🎨 Attributes</button>
 		</div>
 		<div id="toolbarRow4" class="toolbar-row">
-			<label id="indicatorsLabel" title="Simulate which indicators are on, to preview conditional fields/constants/keywords — including a conditioned SKIPB/SPACEB/SPACEA/SKIPA, which shifts everything printed after it">
+			${hasIndicators ? `<label id="indicatorsLabel" title="Simulate which indicators are on, to preview conditional fields/constants/keywords — including a conditioned SKIPB/SPACEB/SPACEA/SKIPA, which shifts everything printed after it">
 				<input type="checkbox" id="indicatorsToggle" ${this.indicatorsEnabled ? 'checked' : ''}> Indicators
-			</label>
-			<span id="indicatorList">${indicatorButtonsHtml}</span>
+			</label>` : ''}
+			<label><input type="checkbox" id="composeToggle" ${this.sequence.length > 0 ? 'checked' : ''}> Compose sequence</label>
 		</div>
+		${this.indicatorsEnabled ? `<div id="toolbarRow5" class="toolbar-row">
+			<span id="indicatorList">${indicatorButtonsHtml}</span>
+		</div>` : ''}
 		<div id="sequenceBar" class="toolbar-row">
 			<span id="sequenceRows"></span>
 			<button id="addSequenceRowBtn" title="Add another record format to the composed sequence">+ Row</button>
@@ -1315,7 +1357,8 @@ export class RecordPreviewPanel {
 		document.getElementById('overlaySelect').addEventListener('change', e => {
 			vscode.postMessage({ type: 'setOverlay', recordName: e.target.value || null });
 		});
-		document.getElementById('indicatorsToggle').addEventListener('change', e => {
+		// Only rendered at all once there's at least one indicator to simulate in the current record.
+		document.getElementById('indicatorsToggle')?.addEventListener('change', e => {
 			vscode.postMessage({ type: 'setIndicatorsEnabled', enabled: e.target.checked });
 		});
 		document.querySelectorAll('.indicator-btn').forEach(btn => {
@@ -1522,7 +1565,13 @@ export class RecordPreviewPanel {
 				return;
 			};
 			const el = e.target.closest('[data-line]');
-			if (!el) return;
+			if (!el) {
+				// Clicked blank space on the page — deselect whatever was highlighted, same as
+				// dspf-edit's own preview.
+				applyHighlight(null);
+				vscode.postMessage({ type: 'deselect' });
+				return;
+			};
 			const rect = el.getBoundingClientRect();
 			const metrics = measure();
 			dragState = {

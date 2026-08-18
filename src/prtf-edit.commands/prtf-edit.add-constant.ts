@@ -14,8 +14,9 @@ const KEYWORD_ZONE_WIDTH = 36;
  * column is reserved for the trailing '-' continuation marker itself (see buildConstantLines). */
 const CONTINUATION_CONTENT_WIDTH = KEYWORD_ZONE_WIDTH - 1;
 /** Sanity cap on total literal length — DDS quoted literals can run long, but this is generous
- * enough for real report text while still catching a runaway paste. */
-const MAX_CONSTANT_TEXT_LENGTH = 500;
+ * enough for real report text while still catching a runaway paste. Also reused by
+ * edit-constant-text.ts's own text prompt. */
+export const MAX_CONSTANT_TEXT_LENGTH = 500;
 
 /**
  * Builds one or more source lines for a new constant, splitting the quoted literal across DDS's

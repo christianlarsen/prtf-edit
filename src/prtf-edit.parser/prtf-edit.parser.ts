@@ -13,7 +13,7 @@ import {
     PrtfFile,
     PrtfAttribute,
     isLiteralConstantValue,
-    systemKeywordPlaceholder
+    constantPrintedWidth
 } from '../prtf-edit.model/prtf-edit.model';
 
 /**
@@ -411,10 +411,7 @@ function parseConstantElement(
     const { row: resolvedRow, col: resolvedCol } = resolvePosition(components.row, components.col, components.colRelative);
 
     if (resolvedCol !== undefined) {
-        const printedLength = isLiteral
-            ? stripConstantQuotes(fullValue).length
-            : (systemKeywordPlaceholder(fullValue)?.length ?? fullValue.length);
-        lastPositionInRecord = { row: resolvedRow, col: resolvedCol, length: printedLength };
+        lastPositionInRecord = { row: resolvedRow, col: resolvedCol, length: constantPrintedWidth(fullValue) };
     };
 
     const element = {
@@ -817,6 +814,14 @@ export interface FlowModeMoveInfo {
      * actually needed (off by the clamp) whenever the raw baseline is 0 (typically a record's
      * first item, with no leading record-level SKIPB/SPACEB). */
     baselineRow?: number;
+    /** The item's own fully-resolved row under the same gate — i.e. wherever it's actually being
+     * rendered right now (its own SPACEB/SKIPB included, if currently active). When a drag's
+     * clamped target row comes back equal to this, the row genuinely wasn't touched (a column-only
+     * drag) and the item's own SPACEB must be left exactly as coded — recomputing it from
+     * `target - baselineRow` in that case would silently collapse a currently-*inactive*
+     * indicator-conditioned SPACEB down to 0, since an inactive one contributes nothing to
+     * `currentRow` either. Only set when isFlowMode is true. */
+    currentRow?: number;
     /** True when the item's own SKIPB (an absolute jump, not a relative advance) already
      * contributes to its row — dragging it vertically isn't supported in that case, since the
      * SPACEB this feature writes only adds on top of wherever SKIPB already jumped to, and
@@ -832,8 +837,19 @@ export interface FlowModeMoveInfo {
  * @param elements - The full parsed element list (ExtensionState.lastPrtfElements)
  * @param recordName - The record the dragged item belongs to
  * @param targetLineIndex - The dragged item's own source line (field) or first line (constant)
+ * @param isAttributeActive - Optional gate (see simulateRecordFlow), passed through so the
+ *   baseline matches whatever's actually on screen: e.g. a preceding item's indicator-conditioned
+ *   SPACEB only counts toward the dragged item's baseline if that condition is currently
+ *   satisfied. Omitting this (every caller but the preview) would silently disagree with the
+ *   rendered row whenever an earlier item has *any* conditioned SKIPB/SPACEB/SPACEA/SKIPA,
+ *   wrongly triggering (or skipping) the swap-with-previous-item fallback below.
  */
-export function resolveFlowModeMove(elements: PrtfElement[], recordName: string, targetLineIndex: number): FlowModeMoveInfo {
+export function resolveFlowModeMove(
+    elements: PrtfElement[],
+    recordName: string,
+    targetLineIndex: number,
+    isAttributeActive?: (attr: PrtfAttribute) => boolean
+): FlowModeMoveInfo {
     const record = elements.find((el): el is PrtfRecord => el.kind === 'record' && el.name === recordName);
     const items = elements
         .filter((el): el is PrtfField | PrtfConstant =>
@@ -849,19 +865,13 @@ export function resolveFlowModeMove(elements: PrtfElement[], recordName: string,
 
     const hasOwnSkipB = (targetItem.attributes ?? []).some(attr => /\bSKIPB\(/i.test(attr.value));
 
-    const { baselineBefore } = simulateRecordFlow(record, items, 0);
-    return { isFlowMode: true, baselineRow: baselineBefore.get(targetLineIndex) ?? 0, hasOwnSkipB };
-};
-
-/**
- * Removes quotes from a constant's raw name for storage/length purposes — but only when it's
- * actually a quoted literal (a bare DDS system keyword like DATE/TIME/PAGNBR can be coded
- * unquoted in the same position).
- */
-function stripConstantQuotes(rawName: string): string {
-    return rawName.length >= 2 && rawName.startsWith("'") && rawName.endsWith("'")
-        ? rawName.slice(1, -1)
-        : rawName;
+    const { rows, baselineBefore } = simulateRecordFlow(record, items, 0, isAttributeActive);
+    return {
+        isFlowMode: true,
+        baselineRow: baselineBefore.get(targetLineIndex) ?? 0,
+        currentRow: rows.get(targetLineIndex),
+        hasOwnSkipB
+    };
 };
 
 /** Assigns endIndex to each record based on the next record's start or EOF. */

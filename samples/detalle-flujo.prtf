@@ -12,8 +12,9 @@
      A          R DETALLE                   SPACEA(1)
      A            CODIGO        10A  O     1
      A            DESCRIPCIO    30A  O    +2
-     A            CANTIDAD       7S 2O    +2
+     A            IMPORTE        9S 2O    59
+     A                                      EDTCDE(J *)
+
+     A            CANTIDAD       7S 2O    47
      A                                      EDTCDE(J)
      A  30                                  SPACEB(2)
-     A            IMPORTE        9S 2O    +4
-     A                                      EDTCDE(J *)

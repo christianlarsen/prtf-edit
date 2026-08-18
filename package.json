@@ -64,6 +64,14 @@
         "icon": "$(open-preview)"
       },
       {
+        "command": "prtf-edit.edit-constant-text",
+        "title": "Edit Text..."
+      },
+      {
+        "command": "prtf-edit.fill-constant",
+        "title": "Fill to Width of..."
+      },
+      {
         "command": "prtf-edit.edit-attributes",
         "title": "Edit Attributes..."
       },
@@ -77,12 +85,20 @@
         "icon": "$(add)"
       },
       {
+        "command": "prtf-edit.rename-record",
+        "title": "Rename Record..."
+      },
+      {
         "command": "prtf-edit.copy-record",
         "title": "Copy Record..."
       },
       {
         "command": "prtf-edit.delete-record",
         "title": "Delete Record"
+      },
+      {
+        "command": "prtf-edit.rename-field",
+        "title": "Rename Field..."
       },
       {
         "command": "prtf-edit.copy-element",
@@ -106,14 +122,24 @@
           "group": "inline@1"
         },
         {
+          "command": "prtf-edit.edit-constant-text",
+          "when": "view == prtf-edit.schema-view && viewItem == constant",
+          "group": "1_modification@1"
+        },
+        {
+          "command": "prtf-edit.fill-constant",
+          "when": "view == prtf-edit.schema-view && viewItem == constant",
+          "group": "1_modification@2"
+        },
+        {
           "command": "prtf-edit.edit-attributes",
           "when": "view == prtf-edit.schema-view && (viewItem == field || viewItem == constant)",
-          "group": "1_modification"
+          "group": "1_modification@3"
         },
         {
           "command": "prtf-edit.edit-indicators",
           "when": "view == prtf-edit.schema-view && (viewItem == field || viewItem == constant || viewItem == attribute)",
-          "group": "1_modification"
+          "group": "1_modification@4"
         },
         {
           "command": "prtf-edit.add-record",
@@ -121,9 +147,14 @@
           "group": "2_recordActions@1"
         },
         {
-          "command": "prtf-edit.copy-record",
+          "command": "prtf-edit.rename-record",
           "when": "view == prtf-edit.schema-view && viewItem == record",
           "group": "2_recordActions@2"
+        },
+        {
+          "command": "prtf-edit.copy-record",
+          "when": "view == prtf-edit.schema-view && viewItem == record",
+          "group": "2_recordActions@3"
         },
         {
           "command": "prtf-edit.delete-record",
@@ -131,9 +162,14 @@
           "group": "9_recordActions"
         },
         {
+          "command": "prtf-edit.rename-field",
+          "when": "view == prtf-edit.schema-view && viewItem == field",
+          "group": "2_itemActions@1"
+        },
+        {
           "command": "prtf-edit.copy-element",
           "when": "view == prtf-edit.schema-view && (viewItem == field || viewItem == constant)",
-          "group": "2_itemActions"
+          "group": "2_itemActions@2"
         },
         {
           "command": "prtf-edit.delete-element",

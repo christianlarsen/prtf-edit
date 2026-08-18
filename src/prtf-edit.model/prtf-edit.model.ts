@@ -101,6 +101,32 @@ export function systemKeywordPlaceholder(attributeValue: string): string | undef
 };
 
 /**
+ * Removes quotes from a constant's raw name for storage/length purposes — but only when it's
+ * actually a quoted literal (a bare DDS system keyword like DATE/TIME/PAGNBR can be coded
+ * unquoted in the same position).
+ */
+export function stripConstantQuotes(rawName: string): string {
+  return rawName.length >= 2 && rawName.startsWith("'") && rawName.endsWith("'")
+    ? rawName.slice(1, -1)
+    : rawName;
+};
+
+/**
+ * A constant's printed width — the same estimate the parser uses to chain "+n" relative
+ * positions, also reused as the width lookup for "Fill to Width of...". A quoted literal's
+ * unescaped length, or a recognized system keyword's placeholder width (DATE/TIME/PAGNBR),
+ * falling back to the raw text's own length for anything else (e.g. a hex literal, or an
+ * unrecognized system keyword) — an approximation, not an exact print-time value.
+ * @param rawName - A constant's raw (still-quoted, if applicable) name/text
+ */
+export function constantPrintedWidth(rawName: string): number {
+  const isLiteral = rawName === '' || isLiteralConstantValue(rawName);
+  return isLiteral
+    ? stripConstantQuotes(rawName).length
+    : (systemKeywordPlaceholder(rawName)?.length ?? rawName.length);
+};
+
+/**
  * Extracts a field/constant/record's TEXT() keyword description, if present — pure DDS
  * documentation with no runtime effect, surfaced as a hover tooltip in the preview.
  * @param attributes - The element's own DDS attributes

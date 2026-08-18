@@ -7,6 +7,7 @@
 import * as vscode from 'vscode';
 import { ExtensionState } from '../prtf-edit.states/state';
 import { resolveFlowModeMove } from '../prtf-edit.parser/prtf-edit.parser';
+import { PrtfAttribute } from '../prtf-edit.model/prtf-edit.model';
 
 /**
  * Rewrites a source line's Line/Position zone (columns 39-41, 42-44 — 0-based 38-40/41-43) with
@@ -55,14 +56,20 @@ export function applySpaceBToLine(lineText: string, newValue: number): string {
 };
 
 /**
- * True for a keyword-only continuation line (blank sequence/indicator/name/position zone, just
- * form-type 'A' in column 6 — see buildFieldLine/buildConstantLines) that's left with nothing at
- * all in its keyword zone, e.g. after applySpaceBToLine strips out its only keyword. Such a line
- * is now pure dead weight and should be deleted outright rather than left behind blank.
+ * True for a keyword-only continuation line (just form-type 'A' in column 6 — see
+ * buildFieldLine/buildConstantLines) that's left with nothing in its keyword zone (columns 45-80),
+ * e.g. after applySpaceBToLine strips out its only keyword. Such a line is now dead weight and
+ * should be deleted outright rather than left behind blank — *including* when it still carries its
+ * own indicator condition (e.g. a leftover "IN30" from "IN30 SPACEB(2)" once SPACEB is gone):
+ * keeping just the indicator zone wouldn't leave a meaningful line, it would leave one that's
+ * structurally indistinguishable, on the next parse, from a *pending* indicator group conditioning
+ * whatever field/constant happens to follow — silently attaching a condition that was never meant
+ * for it. Deliberately checks only the keyword zone, not the whole line from column 6 onward.
  */
 export function isEmptyKeywordOnlyLine(lineText: string): boolean {
 	if (lineText.length < 6 || lineText[5] !== 'A') {return false;};
-	return lineText.substring(0, 5).trim() === '' && lineText.substring(6).trim() === '';
+	if (lineText.substring(0, 5).trim() !== '') {return false;};
+	return lineText.length <= 44 || lineText.substring(44).trim() === '';
 };
 
 /**
@@ -199,8 +206,19 @@ async function applyFlowSwap(
  * @param maxRow - Upper bound to clamp newRow to (the preview's configured page rows)
  * @param maxCol - Upper bound to clamp newCol to (the preview's configured page cols)
  * @param flowMode - True when the preview already knows this item is flow-positioned
+ * @param isAttributeActive - Optional gate (see simulateRecordFlow/resolveFlowModeMove), passed
+ *   through from the preview's own current indicator-simulation state so the baseline this drag
+ *   is measured against always matches what's actually on screen at the moment of the drag.
  */
-export async function moveElement(lineIndex: number, newRow: number, newCol: number, maxRow: number, maxCol: number, flowMode = false): Promise<void> {
+export async function moveElement(
+	lineIndex: number,
+	newRow: number,
+	newCol: number,
+	maxRow: number,
+	maxCol: number,
+	flowMode = false,
+	isAttributeActive?: (attr: PrtfAttribute) => boolean
+): Promise<void> {
 	const document = ExtensionState.lastPrtfDocument;
 	if (!document) {return;}
 	if (lineIndex < 0 || lineIndex >= document.lineCount) {return;}
@@ -225,10 +243,29 @@ export async function moveElement(lineIndex: number, newRow: number, newCol: num
 		const item = ExtensionState.lastPrtfElements.find((e: any) =>
 			(e.kind === 'field' || e.kind === 'constant') && e.lineIndex === lineIndex) as
 			{ recordname: string; lastLineIndex?: number; attributes?: { value: string; lineIndex: number }[] } | undefined;
-		const flowInfo = item ? resolveFlowModeMove(ExtensionState.lastPrtfElements, item.recordname, lineIndex) : { isFlowMode: false as const };
+		const flowInfo = item ? resolveFlowModeMove(ExtensionState.lastPrtfElements, item.recordname, lineIndex, isAttributeActive) : { isFlowMode: false as const };
 
 		if (item && flowInfo.isFlowMode && !flowInfo.hasOwnSkipB) {
 			const baselineRow = flowInfo.baselineRow ?? 0;
+
+			if (clampedRow === flowInfo.currentRow) {
+				// The row genuinely wasn't touched (a horizontal-only drag) — leave the item's own
+				// SPACEB exactly as coded and only rewrite Position. Recomputing it from
+				// clampedRow - baselineRow here would collapse a currently-inactive
+				// indicator-conditioned SPACEB down to 0 (see FlowModeMoveInfo.currentRow): an
+				// inactive SPACEB doesn't move the rendered row either, so the two would look
+				// identical even though the coded value must survive untouched.
+				const updatedLine = buildRepositionedColumnOnly(line.text, clampedCol);
+				if (updatedLine !== line.text) {
+					const edit = new vscode.WorkspaceEdit();
+					edit.replace(document.uri, line.range, updatedLine);
+					const applied = await vscode.workspace.applyEdit(edit);
+					if (!applied) {
+						vscode.window.showErrorMessage('PRTF: could not apply the move — the document may be read-only.');
+					};
+				};
+				return;
+			};
 
 			if (clampedRow < baselineRow) {
 				// Past what this item's own SPACEB can reach — try swapping source order with

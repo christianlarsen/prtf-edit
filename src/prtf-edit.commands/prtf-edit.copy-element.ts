@@ -7,9 +7,9 @@
 import * as vscode from 'vscode';
 import { ExtensionState } from '../prtf-edit.states/state';
 import { PrtfNode } from '../prtf-edit.providers/prtf-edit.providers';
-import { findBlockEndLineIndex } from './prtf-edit.move-element';
+import { findBlockEndLineIndex, isEmptyKeywordOnlyLine } from './prtf-edit.move-element';
 import { keywordPattern, applyKeywordToLine } from './prtf-edit.edit-spacing';
-import { NAME_PATTERN } from './prtf-edit.add-field';
+import { NAME_PATTERN, renameNameZone } from './prtf-edit.add-field';
 
 const SPACING_KEYWORDS = ['SKIPB', 'SPACEB', 'SPACEA', 'SKIPA'] as const;
 
@@ -24,16 +24,6 @@ type CopyableItem = {
 
 function hasSpacingKeyword(attributes: CopyableItem['attributes']): boolean {
 	return (attributes ?? []).some(attr => SPACING_KEYWORDS.some(kw => keywordPattern(kw).test(attr.value)));
-};
-
-/** True when nothing remains in the keyword zone (columns 45-80) — deliberately narrower than
- * move-element.ts's isEmptyKeywordOnlyLine, which also requires the *indicator* zone (columns
- * 7-16) to be blank: a trailing continuation line can carry both a spacing keyword and its own
- * indicator condition (e.g. "IN30 SPACEB(2)"), and once the keyword's gone, keeping just the
- * indicator would misattach that conditioning to whatever the next real element happens to be —
- * worse than dropping it. */
-function isKeywordZoneBlank(line: string): boolean {
-	return line.length <= 44 || line.substring(44).trim() === '';
 };
 
 /** Removes any of the four spacing keywords from the item's own block (its primary definition
@@ -51,7 +41,7 @@ function stripSpacingFromOwnBlock(ownLines: string[]): string[] {
 		for (const kw of SPACING_KEYWORDS) {
 			if (keywordPattern(kw).test(line)) {line = applyKeywordToLine(line, kw, undefined);};
 		};
-		if (i === 0 || !isKeywordZoneBlank(line)) {result.push(line);};
+		if (i === 0 || !isEmptyKeywordOnlyLine(line)) {result.push(line);};
 	});
 	return result;
 };
@@ -74,14 +64,6 @@ function gatherBlockLines(document: vscode.TextDocument, elements: any[], item: 
 	};
 
 	return { lines, primaryIndexInBlock };
-};
-
-/** Rewrites just the name zone (columns 19-28) of a field's own definition line — identical
- * column/width to a record's own name zone (see record-crud.ts's renameRecordLine), left
- * unfactored since it's a two-line operation used in exactly one place here. */
-function renameFieldLine(originalLine: string, newName: string): string {
-	const padded = originalLine.length < 28 ? originalLine.padEnd(28) : originalLine;
-	return padded.substring(0, 18) + newName.padEnd(10) + padded.substring(28);
 };
 
 /**
@@ -154,7 +136,7 @@ export async function copyElementFromNode(node: PrtfNode): Promise<void> {
 			}
 		});
 		if (!rawName) {return;} // Cancelled.
-		lines[primaryIndexInBlock] = renameFieldLine(lines[primaryIndexInBlock], rawName.trim().toUpperCase());
+		lines[primaryIndexInBlock] = renameNameZone(lines[primaryIndexInBlock], rawName.trim().toUpperCase());
 	};
 
 	const targetRecord = records.find(r => r.name === targetRecordName);
