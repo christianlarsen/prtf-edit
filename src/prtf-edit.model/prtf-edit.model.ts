@@ -25,6 +25,13 @@ export interface PrtfAttribute {
   lastLineIndex?: number;
   value: string;
   indicators?: PrtfIndicator[];
+  /** Every physical source line that contributed to `indicators`, in order — every indicator-only
+   * continuation line consumed before this one, then this line's own index last (indicator
+   * continuation lines precede, rather than follow, the line they condition — see
+   * resolveLineIndicators in the parser). Undefined when there are no indicators at all. Lets a
+   * write-back command find exactly which lines to rewrite/remove without re-deriving the parser's
+   * own accumulation logic. */
+  indicatorLineIndices?: number[];
   /** Set on the wrapper 'attribute' element the parser emits per source line: the actual
    * keyword attribute(s) found on that line, later merged into the parent's own `attributes`. */
   attributes?: PrtfAttribute[];
@@ -86,7 +93,10 @@ export function systemKeywordPlaceholder(attributeValue: string): string | undef
   // 9999 (not a plausible "page 1"), matching RLU's own "fill with the widest possible value"
   // design-view convention — the page count never grows past 9999 anyway (see the PAGNBR
   // reference), so this doubles as the field's true worst case, not just an arbitrary choice.
-  if (upper === 'PAGNBR') {return '9999';};
+  // PAGNBR takes no parameters of its own, so (unlike DATE/TIME's own `KEYWORD(` check) a bare
+  // trailing space is what tolerates another keyword coded on the same line (e.g. "PAGNBR
+  // EDTCDE(Y)") without over-matching an unrelated word that merely starts with "PAGNBR".
+  if (upper === 'PAGNBR' || upper.startsWith('PAGNBR ')) {return '9999';};
   return undefined;
 };
 
@@ -158,6 +168,8 @@ export interface PrtfField {
   recordname: string;
   attributes?: PrtfAttribute[];
   indicators?: PrtfIndicator[];
+  /** See the same field on PrtfAttribute. */
+  indicatorLineIndices?: number[];
 };
 
 /** DDS Constant element (unnamed field, or *NONE when POSITION keyword is used) */
@@ -172,6 +184,8 @@ export interface PrtfConstant {
   lastLineIndex: number;
   recordname: string;
   attributes?: PrtfAttribute[];
+  /** See the same field on PrtfAttribute. */
+  indicatorLineIndices?: number[];
   indicators?: PrtfIndicator[];
 };
 

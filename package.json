@@ -62,6 +62,35 @@
         "command": "prtf-edit.preview-record",
         "title": "Preview Page Layout",
         "icon": "$(open-preview)"
+      },
+      {
+        "command": "prtf-edit.edit-attributes",
+        "title": "Edit Attributes..."
+      },
+      {
+        "command": "prtf-edit.edit-indicators",
+        "title": "Indicators..."
+      },
+      {
+        "command": "prtf-edit.add-record",
+        "title": "New Record...",
+        "icon": "$(add)"
+      },
+      {
+        "command": "prtf-edit.copy-record",
+        "title": "Copy Record..."
+      },
+      {
+        "command": "prtf-edit.delete-record",
+        "title": "Delete Record"
+      },
+      {
+        "command": "prtf-edit.copy-element",
+        "title": "Copy Field/Constant..."
+      },
+      {
+        "command": "prtf-edit.delete-element",
+        "title": "Delete Field/Constant"
       }
     ],
     "menus": {
@@ -70,6 +99,46 @@
           "command": "prtf-edit.preview-record",
           "when": "view == prtf-edit.schema-view && viewItem == record",
           "group": "inline@1"
+        },
+        {
+          "command": "prtf-edit.add-record",
+          "when": "view == prtf-edit.schema-view && viewItem == treeGroup:records",
+          "group": "inline@1"
+        },
+        {
+          "command": "prtf-edit.edit-attributes",
+          "when": "view == prtf-edit.schema-view && (viewItem == field || viewItem == constant)",
+          "group": "1_modification"
+        },
+        {
+          "command": "prtf-edit.edit-indicators",
+          "when": "view == prtf-edit.schema-view && (viewItem == field || viewItem == constant || viewItem == attribute)",
+          "group": "1_modification"
+        },
+        {
+          "command": "prtf-edit.add-record",
+          "when": "view == prtf-edit.schema-view && viewItem == record",
+          "group": "2_recordActions@1"
+        },
+        {
+          "command": "prtf-edit.copy-record",
+          "when": "view == prtf-edit.schema-view && viewItem == record",
+          "group": "2_recordActions@2"
+        },
+        {
+          "command": "prtf-edit.delete-record",
+          "when": "view == prtf-edit.schema-view && viewItem == record",
+          "group": "9_recordActions"
+        },
+        {
+          "command": "prtf-edit.copy-element",
+          "when": "view == prtf-edit.schema-view && (viewItem == field || viewItem == constant)",
+          "group": "2_itemActions"
+        },
+        {
+          "command": "prtf-edit.delete-element",
+          "when": "view == prtf-edit.schema-view && (viewItem == field || viewItem == constant)",
+          "group": "9_itemActions"
         }
       ]
     }

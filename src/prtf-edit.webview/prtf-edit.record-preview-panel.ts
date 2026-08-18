@@ -5,7 +5,7 @@
 */
 
 import * as vscode from 'vscode';
-import { PrtfElement, PrtfField, PrtfConstant, PrtfRecord, PrtfAttribute, systemKeywordPlaceholder, findTextKeyword } from '../prtf-edit.model/prtf-edit.model';
+import { PrtfElement, PrtfField, PrtfConstant, PrtfRecord, PrtfAttribute, PrtfIndicator, systemKeywordPlaceholder, findTextKeyword, groupIndicatorsByCondition } from '../prtf-edit.model/prtf-edit.model';
 import { simulateRecordFlow } from '../prtf-edit.parser/prtf-edit.parser';
 import { ExtensionState } from '../prtf-edit.states/state';
 import { revealInTree } from '../prtf-edit.providers/prtf-edit.providers';
@@ -14,6 +14,7 @@ import { addConstantAt } from '../prtf-edit.commands/prtf-edit.add-constant';
 import { addFieldAt } from '../prtf-edit.commands/prtf-edit.add-field';
 import { editSpacing } from '../prtf-edit.commands/prtf-edit.edit-spacing';
 import { deleteElement } from '../prtf-edit.commands/prtf-edit.delete-element';
+import { editAttributes } from '../prtf-edit.commands/prtf-edit.edit-attributes';
 
 /** Default page size (66 lines is the traditional 11" @ 6 LPI page; 132 columns is 10 CPI on
  * standard wide computer paper — both just starting points, editable in the toolbar). */
@@ -59,6 +60,44 @@ interface PageItem {
 };
 
 /**
+ * Whether a field/constant/keyword's own indicator conditioning (AND groups, OR'd alternatives —
+ * see groupIndicatorsByCondition) is satisfied under `activeIndicators` — the set of indicator
+ * numbers currently simulated "on" ("Indicators" toolbar toggle). An empty set (simulation off, or
+ * an overlaid/background layer, which never reacts to the live toggle) produces a deterministic
+ * resting state: unconditioned and explicitly-negated ("NOT") items show, plain positive
+ * conditions don't — mathematically identical to dspf-edit's own "treat every indicator as off"
+ * rule (`activeIndicators.has(n) === active` reduces to `!active` when the set is empty), so one
+ * parameter covers both "not simulating" and "simulating with nothing turned on" without needing a
+ * separate boolean.
+ */
+function isItemDisplayed(indicators: PrtfIndicator[] | undefined, activeIndicators: Set<number>): boolean {
+	if (!indicators || indicators.length === 0) {return true;};
+	const satisfies = (ind: PrtfIndicator) => activeIndicators.has(ind.number) === ind.active;
+	return groupIndicatorsByCondition(indicators).some(group => group.every(satisfies));
+};
+
+/**
+ * Every indicator number referenced anywhere across the given records — each field/constant's own
+ * `indicators`, plus every one of its attributes' own (a keyword can be conditioned independently
+ * of the item it's on) — sorted, for the "Indicators" toolbar's per-number toggle buttons. Record-
+ * level indicators aren't scanned: `PrtfRecord` has no `indicators` field in this model (unlike
+ * DSPF), so there's nothing there to collect.
+ */
+function collectIndicatorNumbers(elements: PrtfElement[], recordNames: string[]): number[] {
+	const numbers = new Set<number>();
+	const addAll = (indicators: PrtfIndicator[] | undefined) => {
+		for (const ind of indicators ?? []) {numbers.add(ind.number);};
+	};
+	for (const el of elements) {
+		if ((el.kind === 'field' || el.kind === 'constant') && recordNames.includes(el.recordname)) {
+			addAll(el.indicators);
+			for (const attr of el.attributes ?? []) {addAll(attr.indicators);};
+		};
+	};
+	return [...numbers].sort((a, b) => a - b);
+};
+
+/**
  * Placeholder character for a field, following the SDA/DFU convention: numeric fields print as a
  * run of '6's, everything else (character, date/time/timestamp) as a run of 'O's (for
  * "output-capable"). Real print data is only known at run time, so this is a stand-in for "a
@@ -75,12 +114,12 @@ function fieldPlaceholderChar(type: string | undefined): string {
  * placement and comma grouping don't vary among these standard codes for a non-zero value — only
  * whether they show at all, and how a negative sign is shown, do.
  */
-interface EditCodeInfo {
+export interface EditCodeInfo {
 	commas: boolean;
 	sign: 'none' | 'suffixMinus' | 'suffixCr' | 'prefixMinus';
 };
 
-const EDIT_CODES: Record<string, EditCodeInfo> = {
+export const EDIT_CODES: Record<string, EditCodeInfo> = {
 	'1': { commas: true, sign: 'none' }, '2': { commas: true, sign: 'none' },
 	'3': { commas: false, sign: 'none' }, '4': { commas: false, sign: 'none' },
 	'A': { commas: true, sign: 'suffixCr' }, 'B': { commas: true, sign: 'suffixCr' },
@@ -107,7 +146,7 @@ function groupDigits(digitCount: number): string {
  * optional second parameter, which is either '*' (asterisk-fill — doesn't affect width) or a
  * literal currency symbol (does).
  */
-function parseEdtcde(attributes: PrtfAttribute[] | undefined): { code: string; currency?: string } | undefined {
+export function parseEdtcde(attributes: PrtfAttribute[] | undefined): { code: string; currency?: string } | undefined {
 	for (const attr of attributes ?? []) {
 		const match = attr.value.match(/EDTCDE\(\s*([1-4A-DJ-Q])\s*(?:(\*)|([^\s)]+))?\s*\)/i);
 		if (match) {return { code: match[1].toUpperCase(), currency: match[3] };};
@@ -123,9 +162,12 @@ function parseEdtcde(attributes: PrtfAttribute[] | undefined): { code: string; c
  * positive values), never larger, so this is the right shape to check for overlap against.
  * Returns undefined when there's no EDTCDE, or it's a user-defined code (5-9) whose editing comes
  * from a CRTEDTD object we have no way to resolve here — those fall back to the plain placeholder.
+ * @param activeAttributes - The field's own attributes, already filtered down to whichever are
+ *   currently indicator-active (see isItemDisplayed) — so a conditionally-applied EDTCDE is only
+ *   honored when its own condition is currently met.
  */
-function editedNumericPlaceholder(field: PrtfField): string | undefined {
-	const edtcde = parseEdtcde(field.attributes);
+function editedNumericPlaceholder(field: PrtfField, activeAttributes: PrtfAttribute[]): string | undefined {
+	const edtcde = parseEdtcde(activeAttributes);
 	if (!edtcde) {return undefined;};
 	const info = EDIT_CODES[edtcde.code];
 	if (!info) {return undefined;};
@@ -143,8 +185,8 @@ function editedNumericPlaceholder(field: PrtfField): string | undefined {
 	return `${prefixSign}${currencyPart}${integerPart}${decimalPart}${suffixSign}`;
 };
 
-function fieldPlaceholderText(field: PrtfField): string {
-	const edited = editedNumericPlaceholder(field);
+function fieldPlaceholderText(field: PrtfField, activeAttributes: PrtfAttribute[]): string {
+	const edited = editedNumericPlaceholder(field, activeAttributes);
 	if (edited) {return edited;};
 	const len = Math.max(field.length ?? 0, 0);
 	return fieldPlaceholderChar(field.type).repeat(len);
@@ -158,14 +200,40 @@ function stripQuotes(rawName: string): string {
 };
 
 /**
+ * PAGNBR's own edited-width placeholder, mirroring editedNumericPlaceholder's "fill with 9s at the
+ * edited width" approach for a field — but against a fixed 4-digit unsigned counter (the '9999'
+ * baseline systemKeywordPlaceholder already uses for a plain PAGNBR) rather than a field's own
+ * length/decimals, since a page number carries neither. Sign display (CR/-/leading-minus) is
+ * skipped regardless of which edit code is chosen — a page number is never negative, so it doesn't
+ * apply here the way it does for a genuinely signed numeric field. Returns undefined when there's
+ * no EDTCDE on this constant, or it's a user-defined code (5-9) this extension can't resolve (same
+ * scope boundary as editedNumericPlaceholder).
+ */
+function editedPagnbrPlaceholder(activeAttributes: PrtfAttribute[]): string | undefined {
+	const edtcde = parseEdtcde(activeAttributes);
+	if (!edtcde) {return undefined;};
+	const info = EDIT_CODES[edtcde.code];
+	if (!info) {return undefined;};
+	const currencyPart = edtcde.currency ?? '';
+	return `${currencyPart}${info.commas ? groupDigits(4) : '9'.repeat(4)}`;
+};
+
+/**
  * Placeholder text for a constant. A bare DATE/TIME/PAGNBR keyword (no quoted literal — see
  * "Constant fields in printer files" in the DDS reference) prints a system-supplied value at run
- * time; approximate that with a representative pattern instead of showing nothing.
+ * time; approximate that with a representative pattern instead of showing nothing. PAGNBR's own
+ * EDTCDE (if any — the only one of the three DDS lets you edit this way) further shapes that
+ * pattern's width, same "worst case" convention as a numeric field's own edited placeholder.
+ * @param activeAttributes - The constant's own attributes, already filtered to whichever are
+ *   currently indicator-active — see editedNumericPlaceholder's own doc comment.
  */
-function constantPlaceholderText(constant: PrtfConstant): string {
-	for (const attr of constant.attributes ?? []) {
+function constantPlaceholderText(constant: PrtfConstant, activeAttributes: PrtfAttribute[]): string {
+	for (const attr of activeAttributes) {
 		const placeholder = systemKeywordPlaceholder(attr.value);
-		if (placeholder) {return placeholder;};
+		if (placeholder) {
+			const isPagnbr = /^PAGNBR\b/i.test(attr.value.trim());
+			return (isPagnbr && editedPagnbrPlaceholder(activeAttributes)) || placeholder;
+		};
 	};
 	return stripQuotes(constant.name);
 };
@@ -190,7 +258,7 @@ function hasEndPage(attributes: PrtfAttribute[] | undefined): boolean {
  * values with no simple mapping, so a field using one of those just renders in the default color,
  * same scope boundary as EDTCDE's user-defined edit codes (5-9).
  */
-const COLOR_NAMES: Record<string, string> = {
+export const COLOR_NAMES: Record<string, string> = {
 	BLK: '#000000', BLU: '#0000ee', BRN: '#8b4513', GRN: '#008000',
 	PNK: '#ff69b4', RED: '#e00000', TRQ: '#00a0a0', YLW: '#b8960c',
 };
@@ -277,12 +345,18 @@ export function buildOwnerGrid(rows: number, cols: number, items: PageItem[]): (
 
 /** Builds one field's PageItem — shared by the single-record and composed-sequence collectors.
  * `rowOverride`/`forceFlowFlag` let a composed render supply a row from its own running
- * simulation instead of the field's own (isolated-record) resolved `row`. */
-function buildFieldPageItem(field: PrtfField, rowOverride?: number, forceFlowFlag?: boolean, recordAttributes?: PrtfAttribute[]): PageItem | undefined {
+ * simulation instead of the field's own (isolated-record) resolved `row`. `activeIndicators`
+ * (empty when indicator simulation is off, or for an overlaid/background layer) filters the
+ * field's own attributes down to whichever are currently indicator-active before deriving
+ * TEXT/UNDERLINE/COLOR/HIGHLIGHT/EDTCDE from them — a conditionally-applied keyword is gated
+ * independently of the field's own visibility (already decided by the caller before this is
+ * called at all). */
+function buildFieldPageItem(field: PrtfField, rowOverride: number | undefined, forceFlowFlag: boolean | undefined, recordAttributes: PrtfAttribute[] | undefined, activeIndicators: Set<number>): PageItem | undefined {
 	const row = rowOverride ?? field.row;
 	if (row === undefined || field.column === undefined) {return undefined;};
 
-	const textDescription = findTextKeyword(field.attributes);
+	const activeAttributes = (field.attributes ?? []).filter(attr => isItemDisplayed(attr.indicators, activeIndicators));
+	const textDescription = findTextKeyword(activeAttributes);
 	const flowPositioned = forceFlowFlag ?? (field.positionSource === 'flow');
 	const title = [
 		textDescription ? `${field.name} — ${textDescription}` : field.name,
@@ -290,48 +364,44 @@ function buildFieldPageItem(field: PrtfField, rowOverride?: number, forceFlowFla
 		'— right-click to edit SKIPB/SPACEB/SPACEA/SKIPA'
 	].filter(Boolean).join(' ');
 	return {
-		row, col: field.column, text: fieldPlaceholderText(field), title, lineIndex: field.lineIndex,
-		underline: hasUnderline(field.attributes), flowPositioned,
-		bold: hasHighlight(field.attributes, recordAttributes), color: getColor(field.attributes)
+		row, col: field.column, text: fieldPlaceholderText(field, activeAttributes), title, lineIndex: field.lineIndex,
+		underline: hasUnderline(activeAttributes), flowPositioned,
+		bold: hasHighlight(activeAttributes, recordAttributes), color: getColor(activeAttributes)
 	};
 };
 
 /** Builds one constant's PageItem — see buildFieldPageItem. */
-function buildConstantPageItem(constant: PrtfConstant, rowOverride?: number, forceFlowFlag?: boolean, recordAttributes?: PrtfAttribute[]): PageItem {
+function buildConstantPageItem(constant: PrtfConstant, rowOverride: number | undefined, forceFlowFlag: boolean | undefined, recordAttributes: PrtfAttribute[] | undefined, activeIndicators: Set<number>): PageItem {
 	const row = rowOverride ?? constant.row;
+	const activeAttributes = (constant.attributes ?? []).filter(attr => isItemDisplayed(attr.indicators, activeIndicators));
 	const flowPositioned = forceFlowFlag ?? (constant.positionSource === 'flow');
 	const title = [
-		findTextKeyword(constant.attributes),
+		findTextKeyword(activeAttributes),
 		flowPositioned ? '(flow-positioned; drag adjusts SPACEB)' : '',
 		'— right-click to edit SKIPB/SPACEB/SPACEA/SKIPA'
 	].filter(Boolean).join(' ');
 	return {
-		row, col: constant.column, text: constantPlaceholderText(constant), title, lineIndex: constant.lineIndex,
-		underline: hasUnderline(constant.attributes), flowPositioned,
-		bold: hasHighlight(constant.attributes, recordAttributes), color: getColor(constant.attributes)
+		row, col: constant.column, text: constantPlaceholderText(constant, activeAttributes), title, lineIndex: constant.lineIndex,
+		underline: hasUnderline(activeAttributes), flowPositioned,
+		bold: hasHighlight(activeAttributes, recordAttributes), color: getColor(activeAttributes)
 	};
 };
 
 /**
  * Collects the visible (row, col, text) items for one record: fields and constants with a
- * resolved absolute position, skipping program-to-system fields (usage `P` — they never print).
- * A record positioned via SPACEB/SPACEA/SKIPB/SKIPA flow (no explicit Line) is included too, its
- * rows already normalized to absolute coordinates by the parser's resolveFlowModePositions.
+ * resolved absolute position, skipping program-to-system fields (usage `P` — they never print)
+ * and anything indicator-conditioned off under `activeIndicators` (see isItemDisplayed).
+ * Delegates to positionRecordEntry (below) rather than reading each item's own pre-resolved
+ * `row`/`column` directly — a flow-mode record needs a *fresh* SPACEB/SPACEA/SKIPB/SKIPA
+ * simulation to reflect the current simulated indicator state (a conditioned spacing keyword
+ * shouldn't contribute when its own condition isn't met), not the static resolution
+ * resolveFlowModePositions computed once at parse time assuming everything unconditionally
+ * applies.
  */
-export function collectPageItems(elements: PrtfElement[], recordName: string): PageItem[] {
-	const items: PageItem[] = [];
-	const recordAttributes = elements.find((el): el is PrtfRecord => el.kind === 'record' && el.name === recordName)?.attributes;
-
-	for (const el of elements) {
-		if (el.kind === 'field' && el.recordname === recordName && !el.programToSystem) {
-			const item = buildFieldPageItem(el, undefined, undefined, recordAttributes);
-			if (item) {items.push(item);};
-		} else if (el.kind === 'constant' && el.recordname === recordName) {
-			items.push(buildConstantPageItem(el, undefined, undefined, recordAttributes));
-		};
-	};
-
-	return items;
+export function collectPageItems(elements: PrtfElement[], recordName: string, activeIndicators: Set<number> = new Set()): PageItem[] {
+	const record = elements.find((el): el is PrtfRecord => el.kind === 'record' && el.name === recordName);
+	if (!record) {return [];};
+	return positionRecordEntry(elements, record, 0, false, activeIndicators).items;
 };
 
 /** One entry in a composed multi-record sequence: a record format, repeated `repeat` times. */
@@ -370,33 +440,44 @@ export interface SequenceEntry {
  * @param record - The record format to position
  * @param startLine - The "current line" coming in from whatever was positioned before it
  * @param tagOverlay - True to mark every resulting item PageItem.overlay (dimmed, non-interactive)
+ * @param activeIndicators - Currently-simulated-on indicator numbers (empty = simulation off, or
+ *   an overlaid/background layer — see isItemDisplayed). Items conditioned off are excluded
+ *   *before* flow simulation runs, not just from the rendered result — a hidden field/constant's
+ *   own SKIPB/SPACEB/SPACEA/SKIPA shouldn't contribute to the running line either, matching real
+ *   DDS (a conditioned-off element's whole line, spacing included, doesn't execute). What remains
+ *   is passed to simulateRecordFlow with a per-*attribute* gate too, so a keyword conditioned
+ *   more narrowly than its own (already-visible) item — e.g. a SPACEA on its own separately
+ *   conditioned continuation line — is still resolved correctly on its own terms.
  */
 function positionRecordEntry(
 	elements: PrtfElement[],
 	record: PrtfRecord,
 	startLine: number,
-	tagOverlay: boolean
+	tagOverlay: boolean,
+	activeIndicators: Set<number>
 ): { items: PageItem[]; endLine: number } {
 	const recordItems = elements
 		.filter((el): el is PrtfField | PrtfConstant => (el.kind === 'field' || el.kind === 'constant') && el.recordname === record.name)
+		.filter(el => isItemDisplayed(el.indicators, activeIndicators))
 		.sort((a, b) => a.lineIndex - b.lineIndex);
 	if (recordItems.length === 0) {return { items: [], endLine: startLine };};
 
 	const items: PageItem[] = [];
 	let currentLine = startLine;
 	const tag = (item: PageItem): PageItem => tagOverlay ? { ...item, overlay: true } : item;
+	const isAttributeActive = (attr: PrtfAttribute) => isItemDisplayed(attr.indicators, activeIndicators);
 
 	if (recordItems.every(item => item.positionSource !== 'explicit')) {
-		const { rows, endLine } = simulateRecordFlow(record, recordItems, startLine);
+		const { rows, endLine } = simulateRecordFlow(record, recordItems, startLine, isAttributeActive);
 		for (const item of recordItems) {
 			const row = rows.get(item.lineIndex);
 			if (row === undefined) {continue;};
 			if (item.kind === 'field') {
 				if (item.programToSystem) {continue;};
-				const built = buildFieldPageItem(item, row, true, record.attributes);
+				const built = buildFieldPageItem(item, row, true, record.attributes, activeIndicators);
 				if (built) {items.push(tag(built));};
 			} else {
-				items.push(tag(buildConstantPageItem(item, row, true, record.attributes)));
+				items.push(tag(buildConstantPageItem(item, row, true, record.attributes, activeIndicators)));
 			};
 		};
 		currentLine = endLine;
@@ -404,7 +485,7 @@ function positionRecordEntry(
 		for (const item of recordItems) {
 			if (item.kind === 'field') {
 				if (item.programToSystem) {continue;};
-				const built = buildFieldPageItem(item, undefined, undefined, record.attributes);
+				const built = buildFieldPageItem(item, undefined, undefined, record.attributes, activeIndicators);
 				if (built) {
 					items.push(tag(built));
 					// +1: the default handoff is the line *after* the highest one this record
@@ -412,7 +493,7 @@ function positionRecordEntry(
 					currentLine = Math.max(currentLine, built.row + 1);
 				};
 			} else {
-				const built = buildConstantPageItem(item, undefined, undefined, record.attributes);
+				const built = buildConstantPageItem(item, undefined, undefined, record.attributes, activeIndicators);
 				items.push(tag(built));
 				currentLine = Math.max(currentLine, built.row + 1);
 			};
@@ -445,8 +526,9 @@ function positionRecordEntry(
  * @param elements - The full parsed document
  * @param sequence - The ordered, repeat-counted record formats to compose
  * @param overflowLine - The page length (OVRFLW/PAGESIZE) to roll over at
+ * @param activeIndicators - Currently-simulated-on indicator numbers — see positionRecordEntry.
  */
-export function collectComposedPageItems(elements: PrtfElement[], sequence: SequenceEntry[], overflowLine: number): PageItem[] {
+export function collectComposedPageItems(elements: PrtfElement[], sequence: SequenceEntry[], overflowLine: number, activeIndicators: Set<number> = new Set()): PageItem[] {
 	const items: PageItem[] = [];
 	const records = elements.filter((el): el is PrtfRecord => el.kind === 'record');
 	const pageLength = Math.max(1, Math.floor(overflowLine) || 1);
@@ -458,7 +540,7 @@ export function collectComposedPageItems(elements: PrtfElement[], sequence: Sequ
 		currentPage += 1;
 		currentLine = 0;
 		for (const header of standingHeaders) {
-			const result = positionRecordEntry(elements, header, currentLine, false);
+			const result = positionRecordEntry(elements, header, currentLine, false, activeIndicators);
 			for (const item of result.items) {items.push({ ...item, page: currentPage });};
 			currentLine = result.endLine;
 		};
@@ -470,14 +552,14 @@ export function collectComposedPageItems(elements: PrtfElement[], sequence: Sequ
 
 		const repeatCount = Math.max(1, Math.floor(entry.repeat) || 1);
 		for (let i = 0; i < repeatCount; i++) {
-			let result = positionRecordEntry(elements, record, currentLine, false);
+			let result = positionRecordEntry(elements, record, currentLine, false, activeIndicators);
 			const highestRow = Math.max(currentLine, result.endLine - 1, ...result.items.map(it => it.row));
 
 			if (highestRow > pageLength && currentLine > 0) {
 				// Would overflow the current (non-empty) page — start this instance fresh at the
 				// top of a new one instead of letting it spill across the page boundary.
 				startNewPage();
-				result = positionRecordEntry(elements, record, currentLine, false);
+				result = positionRecordEntry(elements, record, currentLine, false, activeIndicators);
 			};
 
 			for (const item of result.items) {items.push({ ...item, page: currentPage });};
@@ -507,21 +589,31 @@ export function collectComposedPageItems(elements: PrtfElement[], sequence: Sequ
  * overlay this time. Ownership of a shared cell, though, always goes to the active record's items
  * — they're appended last regardless of which record was positioned first, so dragging is never
  * shadowed by the read-only overlay layer.
+ *
+ * The overlaid (background) record always renders at the indicator resting state — an empty
+ * `activeIndicators` set — never the live simulated one, regardless of what `activeIndicators`
+ * itself is; only the active record reacts to the "Indicators" toggle. Mirrors dspf-edit's own
+ * overlay behavior.
+ * @param activeIndicators - Currently-simulated-on indicator numbers, applied to the *active*
+ *   record only.
  */
-export function collectPageItemsWithOverlay(elements: PrtfElement[], recordName: string, overlayRecordName: string): PageItem[] {
+export function collectPageItemsWithOverlay(elements: PrtfElement[], recordName: string, overlayRecordName: string, activeIndicators: Set<number> = new Set()): PageItem[] {
 	const records = elements.filter((el): el is PrtfRecord => el.kind === 'record');
 	const activeRecord = records.find(r => r.name === recordName);
 	if (!activeRecord) {return [];};
 
 	const overlayRecord = records.find(r => r.name === overlayRecordName);
-	if (!overlayRecord) {return positionRecordEntry(elements, activeRecord, 0, false).items;};
+	if (!overlayRecord) {return positionRecordEntry(elements, activeRecord, 0, false, activeIndicators).items;};
 
 	const activeIsFirst = activeRecord.lineIndex <= overlayRecord.lineIndex;
 	const firstRecord = activeIsFirst ? activeRecord : overlayRecord;
 	const secondRecord = activeIsFirst ? overlayRecord : activeRecord;
+	const restingIndicators = new Set<number>();
+	const firstIndicators = activeIsFirst ? activeIndicators : restingIndicators;
+	const secondIndicators = activeIsFirst ? restingIndicators : activeIndicators;
 
-	const firstResult = positionRecordEntry(elements, firstRecord, 0, !activeIsFirst);
-	const secondResult = positionRecordEntry(elements, secondRecord, firstResult.endLine, activeIsFirst);
+	const firstResult = positionRecordEntry(elements, firstRecord, 0, !activeIsFirst, firstIndicators);
+	const secondResult = positionRecordEntry(elements, secondRecord, firstResult.endLine, activeIsFirst, secondIndicators);
 
 	const overlayItems = activeIsFirst ? secondResult.items : firstResult.items;
 	const activeItems = activeIsFirst ? firstResult.items : secondResult.items;
@@ -611,7 +703,10 @@ export class RecordPreviewPanel {
 	private sequence: SequenceEntry[] = [];
 	/** A second record shown dimmed behind the active one, as a read-only reference layer while
 	 * dragging/editing — e.g. checking a detail row doesn't collide with the header above it.
-	 * Mirrors dspf-edit's own Overlay control. Not offered while composing a sequence. */
+	 * Mirrors dspf-edit's own Overlay control. Not offered while composing a sequence. Reset
+	 * (not persisted) whenever the active record changes — createOrShow/syncToLine — so a
+	 * stale overlay target from whatever record was active before doesn't silently keep applying
+	 * to the new one; same reasoning as activeIndicators' own reset. */
 	private overlayRecordName: string | undefined;
 	/** Tracks the "Focus" toggle purely to relabel the button on the next render — the real state
 	 * lives in VS Code's own maximized-editor-group flag (see toggleFocusMode), which this only
@@ -620,10 +715,26 @@ export class RecordPreviewPanel {
 	/** Tracked so a later full re-render (e.g. from a source edit) doesn't silently turn the ruler
 	 * back off — toggling it doesn't otherwise need a re-render at all, since it's pure CSS. */
 	private showRuler = false;
+	/** "Indicators" toggle — a panel-wide preference like showRuler, persisting across switching
+	 * which record is previewed. */
+	private indicatorsEnabled = false;
+	/** Which indicator numbers are currently simulated "on". Reset (not persisted) whenever the
+	 * set of relevant records changes — switching which record is previewed, or editing the
+	 * "Compose sequence" list — since the available/meaningful numbers differ per record; survives
+	 * a same-record re-render (e.g. a source edit), same as dspf-edit's own behavior. */
+	private activeIndicators: Set<number> = new Set();
 	private disposables: vscode.Disposable[] = [];
 
 	public static createOrShow(recordName: string, elements: PrtfElement[]): void {
 		if (RecordPreviewPanel.current) {
+			if (RecordPreviewPanel.current.recordName !== recordName) {
+				RecordPreviewPanel.current.activeIndicators = new Set();
+				// The overlay picker's own options already exclude whichever record is active
+				// (see getHtml's overlayOptions), but the *stored* selection itself was never
+				// actually cleared on a record switch, despite the intent — a stale overlay target
+				// (from whatever record was active before) silently kept applying to the new one.
+				RecordPreviewPanel.current.overlayRecordName = undefined;
+			};
 			RecordPreviewPanel.current.recordName = recordName;
 			RecordPreviewPanel.current.elements = elements;
 			RecordPreviewPanel.current.panel.reveal(vscode.ViewColumn.Beside);
@@ -695,11 +806,15 @@ export class RecordPreviewPanel {
 	};
 
 	/**
-	 * Follows the source cursor: switches the previewed record (re-rendering) when the cursor
-	 * lands in a different one, or just moves the highlight (no re-render — avoids flicker/losing
-	 * scroll position on every keystroke) when it's still within the currently shown record.
+	 * Points the preview (when open) at whatever's on `lineIndex` — called when a tree node is
+	 * selected, *not* on every source cursor move (the preview deliberately doesn't follow the
+	 * cursor around as you edit/scroll — only an explicit tree click or a click inside the preview
+	 * itself changes what it shows, matching dspf-edit's own preview). Switches the previewed
+	 * record (re-rendering) when `lineIndex` lands in a different one than what's currently shown,
+	 * or just moves the highlight (no re-render — avoids flicker/losing scroll position) when it's
+	 * still within the currently shown record.
 	 */
-	public static syncFromSourceLine(elements: PrtfElement[], lineIndex: number): void {
+	public static syncToLine(elements: PrtfElement[], lineIndex: number): void {
 		const panel = RecordPreviewPanel.current;
 		if (!panel) {return;}
 
@@ -710,6 +825,8 @@ export class RecordPreviewPanel {
 			panel.recordName = target.recordName;
 			panel.elements = elements;
 			panel.highlightLineIndex = target.targetLineIndex;
+			panel.activeIndicators = new Set();
+			panel.overlayRecordName = undefined;
 			panel.render();
 		} else {
 			panel.highlightLineIndex = target.targetLineIndex;
@@ -753,17 +870,40 @@ export class RecordPreviewPanel {
 							repeatOnPageBreak: Boolean(it.repeatOnPageBreak)
 						}))
 					: [];
+				// The composed sequence's own records determine which indicator numbers are even
+				// meaningful — same reasoning as resetting on a plain record switch.
+				this.activeIndicators = new Set();
 				this.render();
 				break;
 			case 'setOverlay':
 				this.overlayRecordName = typeof message.recordName === 'string' && message.recordName ? message.recordName : undefined;
 				this.render();
 				break;
+			case 'setIndicatorsEnabled':
+				this.indicatorsEnabled = Boolean(message.enabled);
+				this.render();
+				break;
+			case 'toggleIndicator':
+				if (typeof message.number === 'number') {
+					if (this.activeIndicators.has(message.number)) {
+						this.activeIndicators.delete(message.number);
+					} else {
+						this.activeIndicators.add(message.number);
+					};
+					this.render();
+				};
+				break;
 			case 'gotoLine':
 				if (typeof message.lineIndex === 'number') {
 					await RecordPreviewPanel.revealInSourceEditor(message.lineIndex);
 					const target = findElementAtLine(this.elements, message.lineIndex);
 					revealInTree(target?.recordName ?? this.recordName, message.lineIndex);
+					// Drives the preview's own selection square directly, rather than relying on
+					// the source cursor move above to loop back through a selection-change
+					// listener — the preview no longer follows the cursor at all (only an explicit
+					// tree click or a click inside the preview itself changes what's selected).
+					this.highlightLineIndex = target?.targetLineIndex ?? message.lineIndex;
+					this.panel.webview.postMessage({ type: 'highlightLine', lineIndex: this.highlightLineIndex ?? null });
 				};
 				break;
 			case 'moveItem':
@@ -780,6 +920,11 @@ export class RecordPreviewPanel {
 				if (this.sequence.length === 0 && this.highlightLineIndex !== undefined) {
 					await deleteElement(this.highlightLineIndex);
 					this.highlightLineIndex = undefined;
+				};
+				break;
+			case 'editAttributes':
+				if (this.sequence.length === 0 && this.highlightLineIndex !== undefined) {
+					await editAttributes(this.highlightLineIndex);
 				};
 				break;
 			case 'addConstantAt':
@@ -817,14 +962,15 @@ export class RecordPreviewPanel {
 		};
 
 		const composing = this.sequence.length > 0;
+		const liveIndicators = this.indicatorsEnabled ? this.activeIndicators : new Set<number>();
 		// positionRecordEntry lists the overlay's items first — buildPageGrid/buildOwnerGrid
 		// resolve a shared cell to whichever item comes *last* in the array, so the active
 		// record's own content (and its interactivity) always wins where the two overlap.
 		const items = composing
-			? collectComposedPageItems(this.elements, this.sequence, this.overflowLine)
+			? collectComposedPageItems(this.elements, this.sequence, this.overflowLine, liveIndicators)
 			: this.overlayRecordName
-				? collectPageItemsWithOverlay(this.elements, this.recordName, this.overlayRecordName)
-				: collectPageItems(this.elements, this.recordName);
+				? collectPageItemsWithOverlay(this.elements, this.recordName, this.overlayRecordName, liveIndicators)
+				: collectPageItems(this.elements, this.recordName, liveIndicators);
 
 		this.panel.title = composing ? 'Preview: (composed)' : `Preview: ${this.recordName || '(no records)'}`;
 		this.panel.webview.html = this.getHtml(records, items);
@@ -842,6 +988,19 @@ export class RecordPreviewPanel {
 				.filter(r => r.name !== this.recordName)
 				.map(r => `<option value="${escapeHtml(r.name)}" ${r.name === this.overlayRecordName ? 'selected' : ''}>${escapeHtml(r.name)}</option>`))
 			.join('');
+
+		// "Indicators" toggle: which record(s) to scan for available indicator numbers — just the
+		// one being previewed normally, or every record named in the composed sequence while
+		// composing (several may be shown at once there).
+		const indicatorRecordNames = this.sequence.length > 0
+			? [...new Set(this.sequence.map(entry => entry.recordName).filter(Boolean))]
+			: [this.recordName].filter(Boolean);
+		const availableIndicatorNumbers = collectIndicatorNumbers(this.elements, indicatorRecordNames);
+		const indicatorButtonsHtml = this.indicatorsEnabled
+			? availableIndicatorNumbers.map(n =>
+				`<button type="button" class="indicator-btn${this.activeIndicators.has(n) ? ' active' : ''}" data-indicator="${n}">${n}</button>`
+			).join('')
+			: '';
 
 		// Ruler ("📏 Ruler" toggle): a column-number header (every 5 columns) and a row-number
 		// gutter, both outside `.page` itself (a sibling in the same CSS grid) so toggling them
@@ -942,6 +1101,24 @@ export class RecordPreviewPanel {
 		background: #337aff;
 		color: #ffffff;
 		border-color: #337aff;
+	}
+	/* Without this, a disabled button (e.g. "🗑 Delete"/"🎨 Attributes" before anything's selected)
+	   looks identical to an enabled one — the explicit background/color above overrides the
+	   browser's own default disabled dimming, so it needs to be restated here instead. */
+	.toolbar-row button:disabled {
+		background: #f3f3f3;
+		color: #999999;
+		border-color: #ddd;
+		cursor: not-allowed;
+		opacity: 0.6;
+	}
+	/* "Indicators" toggle's per-number buttons — tighter than a regular toolbar button since there
+	   can be many (one per indicator actually referenced in the record). Reuses the same
+	   .active styling every other armed/on toolbar button already has. */
+	.indicator-btn {
+		padding: 1px 6px;
+		min-width: 1.6em;
+		text-align: center;
 	}
 	#sequenceBar {
 		display: none;
@@ -1068,9 +1245,13 @@ export class RecordPreviewPanel {
 	.pf-item:hover {
 		background: #cce4ff;
 	}
+	/* A border around the selected field/constant, like dspf-edit's own preview selection — not a
+	   filled background, which would obscure the O/6 placeholder text underneath it. outline
+	   rather than border: it overlays without adding to the element's box, so it can't shift
+	   neighboring characters out of their monospace grid cells. */
 	.pf-item.pf-highlight {
-		background: #ffe08a;
-		outline: 1px solid #cc9900;
+		outline: 2px solid #337aff;
+		outline-offset: -1px;
 	}
 	.pf-ghost {
 		position: fixed;
@@ -1101,12 +1282,19 @@ export class RecordPreviewPanel {
 			<button id="addConstantBtn" title="Click, then click a point on the page to place a new constant there">+ Constant</button>
 			<button id="addFieldBtn" title="Click, then click a point on the page to place a new field there">+ Field</button>
 			<button id="deleteItemBtn" ${this.highlightLineIndex === undefined ? 'disabled' : ''} title="Click a field/constant on the page first, then this to delete it entirely">🗑 Delete</button>
+			<button id="attributesBtn" ${this.highlightLineIndex === undefined ? 'disabled' : ''} title="Click a field/constant on the page first, then this to set TEXT/COLOR/HIGHLIGHT/UNDERLINE/EDTCDE">🎨 Attributes</button>
 		</div>
 		<div id="toolbarRow3" class="toolbar-row">
 			<label id="overlayLabel" title="Show another record dimmed behind this one, as a read-only reference — e.g. to check a detail row doesn't collide with the header above it">Overlay
 				<select id="overlaySelect">${overlayOptions}</select>
 			</label>
 			<label><input type="checkbox" id="composeToggle" ${this.sequence.length > 0 ? 'checked' : ''}> Compose sequence</label>
+		</div>
+		<div id="toolbarRow4" class="toolbar-row">
+			<label id="indicatorsLabel" title="Simulate which indicators are on, to preview conditional fields/constants/keywords — including a conditioned SKIPB/SPACEB/SPACEA/SKIPA, which shifts everything printed after it">
+				<input type="checkbox" id="indicatorsToggle" ${this.indicatorsEnabled ? 'checked' : ''}> Indicators
+			</label>
+			<span id="indicatorList">${indicatorButtonsHtml}</span>
 		</div>
 		<div id="sequenceBar" class="toolbar-row">
 			<span id="sequenceRows"></span>
@@ -1127,6 +1315,14 @@ export class RecordPreviewPanel {
 		document.getElementById('overlaySelect').addEventListener('change', e => {
 			vscode.postMessage({ type: 'setOverlay', recordName: e.target.value || null });
 		});
+		document.getElementById('indicatorsToggle').addEventListener('change', e => {
+			vscode.postMessage({ type: 'setIndicatorsEnabled', enabled: e.target.checked });
+		});
+		document.querySelectorAll('.indicator-btn').forEach(btn => {
+			btn.addEventListener('click', () => {
+				vscode.postMessage({ type: 'toggleIndicator', number: Number(btn.dataset.indicator) });
+			});
+		});
 		function postPageSize() {
 			vscode.postMessage({
 				type: 'setPageSize',
@@ -1142,11 +1338,15 @@ export class RecordPreviewPanel {
 		const addConstantBtn = document.getElementById('addConstantBtn');
 		const addFieldBtn = document.getElementById('addFieldBtn');
 		const deleteItemBtn = document.getElementById('deleteItemBtn');
+		const attributesBtn = document.getElementById('attributesBtn');
 		let currentHighlightLine = ${JSON.stringify(this.highlightLineIndex ?? null)};
-		function refreshDeleteButtonState() {
-			deleteItemBtn.disabled = composeToggle.checked || currentHighlightLine === null || currentHighlightLine === undefined;
+		function refreshSelectionButtonsState() {
+			const disabled = composeToggle.checked || currentHighlightLine === null || currentHighlightLine === undefined;
+			deleteItemBtn.disabled = disabled;
+			attributesBtn.disabled = disabled;
 		};
 		deleteItemBtn.addEventListener('click', () => vscode.postMessage({ type: 'deleteItem' }));
+		attributesBtn.addEventListener('click', () => vscode.postMessage({ type: 'editAttributes' }));
 
 		// "Compose sequence": combine several record formats (each with a repeat count) onto one
 		// page instead of previewing a single one — see collectComposedPageItems.
@@ -1220,7 +1420,7 @@ export class RecordPreviewPanel {
 			sequenceBar.classList.toggle('visible', active);
 			addConstantBtn.disabled = active;
 			addFieldBtn.disabled = active;
-			refreshDeleteButtonState();
+			refreshSelectionButtonsState();
 		};
 
 		composeToggle.addEventListener('change', () => {
@@ -1412,7 +1612,7 @@ export class RecordPreviewPanel {
 		function applyHighlight(lineIndex) {
 			document.querySelectorAll('.pf-highlight').forEach(el => el.classList.remove('pf-highlight'));
 			currentHighlightLine = lineIndex;
-			refreshDeleteButtonState();
+			refreshSelectionButtonsState();
 			if (lineIndex === null || lineIndex === undefined) return;
 			document.querySelectorAll('[data-line="' + lineIndex + '"]').forEach(el => el.classList.add('pf-highlight'));
 		};

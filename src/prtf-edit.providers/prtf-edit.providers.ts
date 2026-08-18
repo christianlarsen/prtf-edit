@@ -49,7 +49,11 @@ export class PrtfNode extends vscode.TreeItem {
 	) {
 		super(label, collapsibleState);
 		this.id = id;
-		this.contextValue = source.kind;
+		// A synthetic group node's contextValue is qualified by its role (e.g. "treeGroup:records")
+		// rather than the bare "treeGroup" every group shares — needed so a menu's `when` clause can
+		// target one specific group (the "📂 Records" row's own inline "+" icon) without also
+		// matching every other group (Attributes, Indicators, ...).
+		this.contextValue = source.kind === 'treeGroup' ? `treeGroup:${source.role}` : source.kind;
 	};
 };
 
@@ -163,7 +167,11 @@ export class PrtfTreeProvider implements vscode.TreeDataProvider<PrtfNode> {
 
 	private recordsRootGroup(): PrtfNode {
 		const records = this.elements.filter((e): e is PrtfRecord => e.kind === 'record');
-		return wrapGroup({ kind: 'treeGroup', role: 'records', id: 'grp:records', label: '📂 Records', children: records }, vscode.TreeItemCollapsibleState.Expanded);
+		const group: GroupNode = { kind: 'treeGroup', role: 'records', id: 'grp:records', label: `📂 Records (${records.length})`, children: records };
+		// Kept as a real (if empty/unexpandable) node even with zero records, rather than a plain
+		// placeholder text — it's what now carries the "+" inline icon (see PrtfNode's contextValue),
+		// so a brand-new file with no records yet still has something to click to create the first one.
+		return wrapGroup(group, records.length > 0 ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.None);
 	};
 
 	private recordFieldsGroup(record: PrtfRecord): PrtfNode {
@@ -180,11 +188,6 @@ export class PrtfTreeProvider implements vscode.TreeDataProvider<PrtfNode> {
 	private getRootChildren(): PrtfNode[] {
 		if (!this.hasActiveDocument) {
 			return [placeholderNode('Open a PRTF source member')];
-		};
-
-		const records = this.elements.filter((e): e is PrtfRecord => e.kind === 'record');
-		if (records.length === 0) {
-			return [placeholderNode('No records found')];
 		};
 
 		const fileNode = this.elements.find(e => e.kind === 'file');

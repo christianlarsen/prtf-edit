@@ -36,8 +36,15 @@ let lastPositionInRecord: { row: number | undefined; col: number; length: number
  */
 let pendingIndicatorGroups: PrtfIndicator[][] = [];
 
+/** Parallel to pendingIndicatorGroups: every physical line index folded into the buffer so far, in
+ * order — becomes PrtfField/PrtfConstant/PrtfAttribute's own `indicatorLineIndices` once resolved.
+ * Kept separate from the group structure itself since a write-back command only needs "which
+ * lines, in order", not which group each line belongs to. */
+let pendingIndicatorLineIndices: number[] = [];
+
 function resetPendingIndicatorGroups(): void {
     pendingIndicatorGroups = [];
+    pendingIndicatorLineIndices = [];
 };
 
 /**
@@ -56,14 +63,16 @@ function isIndicatorOnlyLine(trimmedLine: string, indicators: PrtfIndicator[]): 
  * starts a new OR'd group, 'A' (or blank, the default) extends the AND group currently being built.
  * @param marker - The line's column-7 character
  * @param indicators - The line's own indicators (columns 8-16)
+ * @param lineIndex - This line's own zero-based index, recorded in pendingIndicatorLineIndices
  */
-function accumulatePendingIndicators(marker: string, indicators: PrtfIndicator[]): void {
+function accumulatePendingIndicators(marker: string, indicators: PrtfIndicator[], lineIndex: number): void {
     if (marker === 'O' && pendingIndicatorGroups.length > 0) {
         pendingIndicatorGroups.push([...indicators]);
     } else {
         if (pendingIndicatorGroups.length === 0) {pendingIndicatorGroups.push([]);}
         pendingIndicatorGroups[pendingIndicatorGroups.length - 1].push(...indicators);
     };
+    pendingIndicatorLineIndices.push(lineIndex);
 };
 
 /**
@@ -73,17 +82,29 @@ function accumulatePendingIndicators(marker: string, indicators: PrtfIndicator[]
  * buffer.
  * @param marker - The terminating line's column-7 character
  * @param ownIndicators - The terminating line's own indicators (columns 8-16)
+ * @param ownLineIndex - The terminating line's own zero-based index
  */
-function resolveLineIndicators(marker: string, ownIndicators: PrtfIndicator[]): PrtfIndicator[] {
+function resolveLineIndicators(
+    marker: string,
+    ownIndicators: PrtfIndicator[],
+    ownLineIndex: number
+): { indicators: PrtfIndicator[]; indicatorLineIndices?: number[] } {
     if (pendingIndicatorGroups.length === 0) {
-        return ownIndicators.map(ind => ({ ...ind, group: 0 }));
+        return {
+            indicators: ownIndicators.map(ind => ({ ...ind, group: 0 })),
+            indicatorLineIndices: ownIndicators.length > 0 ? [ownLineIndex] : undefined
+        };
     };
 
-    accumulatePendingIndicators(marker, ownIndicators);
+    accumulatePendingIndicators(marker, ownIndicators, ownLineIndex);
     const groups = pendingIndicatorGroups;
+    const indicatorLineIndices = pendingIndicatorLineIndices;
     resetPendingIndicatorGroups();
 
-    return groups.flatMap((group, groupIndex) => group.map(ind => ({ ...ind, group: groupIndex })));
+    return {
+        indicators: groups.flatMap((group, groupIndex) => group.map(ind => ({ ...ind, group: groupIndex }))),
+        indicatorLineIndices
+    };
 };
 
 /**
@@ -168,19 +189,19 @@ function parseSingleDdsLine(
     };
 
     if (isFieldLine(lineComponents.fieldName)) {
-        const indicators = resolveLineIndicators(conditionMarker, lineComponents.indicators);
-        return parseFieldElement(lines, lineIndex, trimmedLine, { ...lineComponents, indicators }, lastRecord);
+        const { indicators, indicatorLineIndices } = resolveLineIndicators(conditionMarker, lineComponents.indicators, lineIndex);
+        return parseFieldElement(lines, lineIndex, trimmedLine, { ...lineComponents, indicators, indicatorLineIndices }, lastRecord);
     };
 
     if (isConstantLine(lineComponents)) {
-        const indicators = resolveLineIndicators(conditionMarker, lineComponents.indicators);
-        return parseConstantElement(lines, lineIndex, trimmedLine, { ...lineComponents, indicators }, lastRecord);
+        const { indicators, indicatorLineIndices } = resolveLineIndicators(conditionMarker, lineComponents.indicators, lineIndex);
+        return parseConstantElement(lines, lineIndex, trimmedLine, { ...lineComponents, indicators, indicatorLineIndices }, lastRecord);
     };
 
     // Neither record, field, nor constant: either a pure indicator-only continuation line, or a
     // keyword-only attribute line.
     if (isIndicatorOnlyLine(trimmedLine, lineComponents.indicators)) {
-        accumulatePendingIndicators(conditionMarker, lineComponents.indicators);
+        accumulatePendingIndicators(conditionMarker, lineComponents.indicators, lineIndex);
         return { element: undefined, nextIndex: lineIndex, lastRecord };
     };
 
@@ -359,7 +380,8 @@ function parseFieldElement(
         lineIndex: lineIndex,
         recordname: lastRecord,
         attributes: attributes || [],
-        indicators: components.indicators || undefined
+        indicators: components.indicators || undefined,
+        indicatorLineIndices: components.indicatorLineIndices
     };
 
     return { element, nextIndex, lastRecord };
@@ -408,7 +430,8 @@ function parseConstantElement(
         lastLineIndex: lastLineIndex,
         recordname: lastRecord,
         attributes: [...inlineKeywordAttributes, ...(attributes || [])],
-        indicators: components.indicators
+        indicators: components.indicators,
+        indicatorLineIndices: components.indicatorLineIndices
     };
 
     return { element, nextIndex: lastLineIndex, lastRecord };
@@ -458,8 +481,8 @@ function parseAttributeElement(
     const { attributes, nextIndex } = extractAttributes('A', lines, lineIndex, true, components.indicators);
 
     if (attributes.length > 0) {
-        const indicators = resolveLineIndicators(conditionMarker, components.indicators);
-        attributes.forEach(attr => { attr.indicators = indicators; });
+        const { indicators, indicatorLineIndices } = resolveLineIndicators(conditionMarker, components.indicators, lineIndex);
+        attributes.forEach(attr => { attr.indicators = indicators; attr.indicatorLineIndices = indicatorLineIndices; });
 
         // Belongs to the record itself (if no field/constant precedes it) or the last field/
         // constant — linkAttributesToParents(), run once the whole document is parsed, sorts that
@@ -611,29 +634,48 @@ function linkAttributesToParents(prtfElements: PrtfElement[]): void {
  * whole.
  * @param attributes - The element's own DDS attributes (already fully linked, continuation lines included)
  * @param keyword - One of SKIPB / SPACEB / SPACEA / SKIPA
+ * @param isAttributeActive - Optional gate (see simulateRecordFlow) — an attribute this returns
+ *   false for is skipped, as if it weren't coded at all. Undefined means "every attribute is
+ *   active", the default for every caller except the preview's own indicator simulation.
  */
-function extractSkipSpaceValue(attributes: PrtfAttribute[] | undefined, keyword: string): number | undefined {
+function extractSkipSpaceValue(
+    attributes: PrtfAttribute[] | undefined,
+    keyword: string,
+    isAttributeActive?: (attr: PrtfAttribute) => boolean
+): number | undefined {
     for (const attr of attributes ?? []) {
-        const match = attr.value.match(new RegExp(`\\b${keyword}\\(\\s*(\\d+)\\s*\\)`, 'i'));
+        if (isAttributeActive && !isAttributeActive(attr)) {continue;};
+        // Left boundary is `\b` OR "preceded by a digit" — see edit-spacing.ts's keywordPattern
+        // for why plain `\b` misses a keyword directly abutting a fixed-column zone (e.g. Position)
+        // with no space, a real shape this codebase's own samples use (e.g. "...1DATE(...)").
+        const match = attr.value.match(new RegExp(`(?:\\b|(?<=\\d))${keyword}\\(\\s*(\\d+)\\s*\\)`, 'i'));
         if (match) {return Number(match[1]);};
     };
     return undefined;
 };
 
 /** SKIPB (absolute jump) then SPACEB (relative advance) — processed in that order, before printing. */
-function applySkipSpaceBefore(attributes: PrtfAttribute[] | undefined, currentLine: number): number {
-    const skipB = extractSkipSpaceValue(attributes, 'SKIPB');
+function applySkipSpaceBefore(
+    attributes: PrtfAttribute[] | undefined,
+    currentLine: number,
+    isAttributeActive?: (attr: PrtfAttribute) => boolean
+): number {
+    const skipB = extractSkipSpaceValue(attributes, 'SKIPB', isAttributeActive);
     if (skipB !== undefined) {currentLine = skipB;};
-    const spaceB = extractSkipSpaceValue(attributes, 'SPACEB');
+    const spaceB = extractSkipSpaceValue(attributes, 'SPACEB', isAttributeActive);
     if (spaceB !== undefined) {currentLine += spaceB;};
     return currentLine;
 };
 
 /** SPACEA (relative advance) then SKIPA (absolute jump) — processed in that order, after printing. */
-function applySkipSpaceAfter(attributes: PrtfAttribute[] | undefined, currentLine: number): number {
-    const spaceA = extractSkipSpaceValue(attributes, 'SPACEA');
+function applySkipSpaceAfter(
+    attributes: PrtfAttribute[] | undefined,
+    currentLine: number,
+    isAttributeActive?: (attr: PrtfAttribute) => boolean
+): number {
+    const spaceA = extractSkipSpaceValue(attributes, 'SPACEA', isAttributeActive);
     if (spaceA !== undefined) {currentLine += spaceA;};
-    const skipA = extractSkipSpaceValue(attributes, 'SKIPA');
+    const skipA = extractSkipSpaceValue(attributes, 'SKIPA', isAttributeActive);
     if (skipA !== undefined) {currentLine = skipA;};
     return currentLine;
 };
@@ -665,24 +707,31 @@ export interface FlowSimulationResult {
  * @param record - The record format (for its own record-level SPACEB/SPACEA/SKIPB/SKIPA)
  * @param items - Its fields/constants, in source order
  * @param startLine - The "current line" coming in (0 for a record parsed/previewed in isolation)
+ * @param isAttributeActive - Optional gate, checked before any SKIPB/SPACEB/SPACEA/SKIPA
+ *   contributes: an attribute this returns false for is treated as if it weren't coded at all.
+ *   Lets the preview simulate "what would this look like with these indicators on/off" without
+ *   the *resolved* position (used by drag, add, edit-spacing, etc. — every other caller, which
+ *   never pass this) depending on any ephemeral preview UI state. Undefined (every caller but the
+ *   preview) means every attribute is active, i.e. today's unconditional behavior.
  */
 export function simulateRecordFlow(
     record: PrtfRecord,
     items: (PrtfField | PrtfConstant)[],
-    startLine: number
+    startLine: number,
+    isAttributeActive?: (attr: PrtfAttribute) => boolean
 ): FlowSimulationResult {
     const rows = new Map<number, number>();
     const baselineBefore = new Map<number, number>();
-    let currentLine = applySkipSpaceBefore(record.attributes, startLine);
+    let currentLine = applySkipSpaceBefore(record.attributes, startLine, isAttributeActive);
 
     for (const item of items) {
         baselineBefore.set(item.lineIndex, currentLine);
-        currentLine = applySkipSpaceBefore(item.attributes, currentLine);
+        currentLine = applySkipSpaceBefore(item.attributes, currentLine, isAttributeActive);
         if (currentLine <= 0) {currentLine = 1;};
 
         rows.set(item.lineIndex, currentLine);
 
-        currentLine = applySkipSpaceAfter(item.attributes, currentLine);
+        currentLine = applySkipSpaceAfter(item.attributes, currentLine, isAttributeActive);
     };
 
     // The record's own trailing SPACEA/SKIPA — applied once, after all its fields print — is what
@@ -690,7 +739,7 @@ export function simulateRecordFlow(
     // next line for its next repetition. Irrelevant to `rows` (nothing left in this instance to
     // resolve), only to `endLine`, which is why resolveFlowModePositions below never needed it —
     // there's no "next" to feed when a record is parsed/previewed in isolation.
-    currentLine = applySkipSpaceAfter(record.attributes, currentLine);
+    currentLine = applySkipSpaceAfter(record.attributes, currentLine, isAttributeActive);
 
     return { rows, baselineBefore, endLine: currentLine };
 };

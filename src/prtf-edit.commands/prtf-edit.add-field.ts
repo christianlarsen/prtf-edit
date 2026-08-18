@@ -68,7 +68,7 @@ export function buildFieldLine(name: string, type: string, length: number, decim
 	return [primaryLine];
 };
 
-const NAME_PATTERN = /^[A-Z@#$][A-Z0-9@#$]{0,9}$/;
+export const NAME_PATTERN = /^[A-Z@#$][A-Z0-9@#$]{0,9}$/;
 
 /**
  * Adds a new field to a record at the given (row, col) — used by the preview's "+ Field" placing

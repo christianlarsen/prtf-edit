@@ -9,8 +9,12 @@ import { ExtensionState } from '../prtf-edit.states/state';
 import { findBlockEndLineIndex } from './prtf-edit.move-element';
 import { readKeywordValue } from './prtf-edit.edit-spacing';
 import { simulateRecordFlow } from '../prtf-edit.parser/prtf-edit.parser';
+import { PrtfNode } from '../prtf-edit.providers/prtf-edit.providers';
 
-type DeletableItem = { lineIndex: number; lastLineIndex?: number; recordname: string; positionSource?: string; attributes?: { value: string; lineIndex: number }[] };
+type DeletableItem = {
+	lineIndex: number; lastLineIndex?: number; recordname: string; positionSource?: string;
+	attributes?: { value: string; lineIndex: number }[]; indicatorLineIndices?: number[];
+};
 
 function hasOwnBeforeKeyword(attributes: { value: string }[] | undefined): boolean {
 	return readKeywordValue(attributes, 'SKIPB') !== undefined || readKeywordValue(attributes, 'SPACEB') !== undefined;
@@ -88,6 +92,15 @@ export async function deleteElement(lineIndex: number): Promise<void> {
 		};
 	};
 
+	// Indicator continuation lines *precede* the item they condition (the opposite of every other
+	// continuation convention here — see indicatorLineIndices in prtf-edit.model.ts), so they fall
+	// outside findBlockEndLineIndex's forward-only block and need their own deletes. Each is
+	// removed individually, not as one range, since a comment line can legally sit between two of
+	// them without breaking the parser's own accumulation.
+	for (const indicatorLineIndex of (item.indicatorLineIndices ?? []).slice(0, -1)) {
+		edit.delete(document.uri, document.lineAt(indicatorLineIndex).rangeIncludingLineBreak);
+	};
+
 	const blockEndLineIndex = findBlockEndLineIndex(elements, lineIndex, document.lineCount);
 	const startLine = document.lineAt(lineIndex);
 	const endLine = document.lineAt(blockEndLineIndex);
@@ -97,4 +110,16 @@ export async function deleteElement(lineIndex: number): Promise<void> {
 	if (!applied) {
 		vscode.window.showErrorMessage('PRTF: could not delete — the document may be read-only.');
 	};
+};
+
+/** Adapter for the "Definition" tree's context-menu entry — mirrors editAttributesFromNode. */
+export function deleteElementFromNode(node: PrtfNode): void {
+	if (!node || (node.source.kind !== 'field' && node.source.kind !== 'constant')) {return;}
+	void deleteElement(node.source.lineIndex);
+};
+
+export function registerDeleteElementCommand(context: vscode.ExtensionContext): void {
+	context.subscriptions.push(
+		vscode.commands.registerCommand('prtf-edit.delete-element', deleteElementFromNode)
+	);
 };

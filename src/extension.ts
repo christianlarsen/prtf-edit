@@ -9,7 +9,13 @@ import { PrtfNode, PrtfTreeProvider } from './prtf-edit.providers/prtf-edit.prov
 import { ExtensionState } from './prtf-edit.states/state';
 import { initializeDocumentListeners } from './prtf-edit.listeners/listeners';
 import { registerPreviewRecordCommand } from './prtf-edit.commands/prtf-edit.preview-record';
+import { registerEditAttributesCommand } from './prtf-edit.commands/prtf-edit.edit-attributes';
+import { registerEditIndicatorsCommand } from './prtf-edit.commands/prtf-edit.edit-indicators';
+import { registerRecordCrudCommands } from './prtf-edit.commands/prtf-edit.record-crud';
+import { registerCopyElementCommand } from './prtf-edit.commands/prtf-edit.copy-element';
+import { registerDeleteElementCommand } from './prtf-edit.commands/prtf-edit.delete-element';
 import { revealLine } from './prtf-edit.utils/prtf-edit.navigation';
+import { RecordPreviewPanel } from './prtf-edit.webview/prtf-edit.record-preview-panel';
 
 // Activate extension
 export function activate(context: vscode.ExtensionContext) {
@@ -22,13 +28,17 @@ export function activate(context: vscode.ExtensionContext) {
 		treeDataProvider: treeProvider
 	});
 
-	// Clicking a node navigates the source editor to its line, when it has one.
+	// Clicking a node navigates the source editor to its line, and (if the preview is open) points
+	// the preview at it too — the one and only other place besides a click inside the preview
+	// itself that changes what the preview shows; it deliberately does *not* follow the source
+	// cursor around on its own (see listeners.ts).
 	context.subscriptions.push(
 		treeView.onDidChangeSelection(event => {
 			const node = event.selection[0] as PrtfNode | undefined;
 			const lineIndex = (node?.source as { lineIndex?: number } | undefined)?.lineIndex;
 			if (typeof lineIndex === 'number') {
 				revealLine(lineIndex);
+				RecordPreviewPanel.syncToLine(ExtensionState.lastPrtfElements, lineIndex);
 			};
 		})
 	);
@@ -42,6 +52,11 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(treeView, ExtensionState.diagnosticCollection);
 
 	registerPreviewRecordCommand(context);
+	registerEditAttributesCommand(context);
+	registerEditIndicatorsCommand(context);
+	registerRecordCrudCommands(context);
+	registerCopyElementCommand(context);
+	registerDeleteElementCommand(context);
 	initializeDocumentListeners(context, treeProvider);
 };
 

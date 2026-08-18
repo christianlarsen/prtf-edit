@@ -68,18 +68,6 @@ export function initializeDocumentListeners(
         })
     );
 
-    // Keeps the preview (when open) following the cursor: switches to whichever record it's in,
-    // and highlights the specific field/constant it's on.
-    context.subscriptions.push(
-        vscode.window.onDidChangeTextEditorSelection(event => {
-            if (event.textEditor.document !== ExtensionState.lastPrtfDocument) {return;}
-            const lineIndex = event.selections[0]?.active.line;
-            if (typeof lineIndex === 'number') {
-                RecordPreviewPanel.syncFromSourceLine(ExtensionState.lastPrtfElements, lineIndex);
-            };
-        })
-    );
-
     context.subscriptions.push(
         vscode.workspace.onDidCloseTextDocument(document => {
             if (ExtensionState.lastPrtfDocument && document === ExtensionState.lastPrtfDocument) {

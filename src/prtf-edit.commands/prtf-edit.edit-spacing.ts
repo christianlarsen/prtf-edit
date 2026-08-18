@@ -21,7 +21,13 @@ const KEYWORD_DESCRIPTIONS: Record<SpacingKeyword, string> = {
 };
 
 export function keywordPattern(keyword: string): RegExp {
-	return new RegExp(`\\s?\\b${keyword}\\(\\s*(\\d+)\\s*\\)`, 'i');
+	// The left boundary is `\b` OR "immediately preceded by a digit" — DDS's fixed-column layout
+	// often abuts a keyword directly against the previous zone with no space (e.g. a 3-char
+	// Position "  1" immediately followed by a keyword, as in the real "...1DATE(...)" shape this
+	// codebase's own samples use) — plain `\b` never matches there, since a digit and a letter are
+	// both "word" characters to it. Still rejects being preceded by a letter (e.g. "XSPACEB"),
+	// which is what `\b` was guarding against in the first place.
+	return new RegExp(`\\s?(?:\\b|(?<=\\d))${keyword}\\(\\s*(\\d+)\\s*\\)`, 'i');
 };
 
 export function readKeywordValue(attributes: { value: string }[] | undefined, keyword: string): number | undefined {
