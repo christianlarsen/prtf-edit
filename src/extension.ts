@@ -17,6 +17,7 @@ import { registerDeleteElementCommand } from './prtf-edit.commands/prtf-edit.del
 import { registerRenameCommands } from './prtf-edit.commands/prtf-edit.rename-element';
 import { registerEditConstantTextCommand } from './prtf-edit.commands/prtf-edit.edit-constant-text';
 import { registerFillConstantCommand } from './prtf-edit.commands/prtf-edit.fill-constant';
+import { registerEditRecordSpacingCommand } from './prtf-edit.commands/prtf-edit.edit-spacing';
 import { revealLine } from './prtf-edit.utils/prtf-edit.navigation';
 import { RecordPreviewPanel } from './prtf-edit.webview/prtf-edit.record-preview-panel';
 
@@ -63,6 +64,7 @@ export function activate(context: vscode.ExtensionContext) {
 	registerRenameCommands(context);
 	registerEditConstantTextCommand(context);
 	registerFillConstantCommand(context);
+	registerEditRecordSpacingCommand(context);
 	initializeDocumentListeners(context, treeProvider);
 };
 

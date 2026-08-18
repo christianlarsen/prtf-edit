@@ -6,8 +6,8 @@
 
 import * as vscode from 'vscode';
 import { ExtensionState } from '../prtf-edit.states/state';
-import { isEmptyKeywordOnlyLine } from './prtf-edit.move-element';
-import { findTextKeyword, PrtfAttribute } from '../prtf-edit.model/prtf-edit.model';
+import { isEmptyKeywordOnlyLine, recordAttrsAnchorLineIndex } from './prtf-edit.move-element';
+import { findTextKeyword, PrtfAttribute, PrtfRecord } from '../prtf-edit.model/prtf-edit.model';
 import { COLOR_NAMES, EDIT_CODES, parseEdtcde } from '../prtf-edit.webview/prtf-edit.record-preview-panel';
 import { PrtfNode } from '../prtf-edit.providers/prtf-edit.providers';
 
@@ -22,18 +22,28 @@ const HIGHLIGHT_PATTERN = /\s?\bHIGHLIGHT\b/i;
 const COLOR_PATTERN = /\s?\bCOLOR\(\s*[^)]*\)/i;
 const EDTCDE_PATTERN = /\s?\bEDTCDE\(\s*[^)]*\)/i;
 const TEXT_PATTERN = /\s?\bTEXT\(\s*'(?:[^']|'')*'\s*\)/i;
+/** Record-level only — an unconditional page eject right after that record prints (see
+ * hasEndPage, record-preview-panel.ts). */
+const ENDPAGE_PATTERN = /\s?\bENDPAGE\b/i;
 
-type AttributeItem = {
-	kind: 'field' | 'constant';
-	name: string;
-	type?: string;
+/** The minimal shape applyOrInsertKeyword actually needs — anything with a primary line, an
+ * optional last-line anchor for appending a new continuation line, and its own attribute list.
+ * A field/constant (AttributeItem) satisfies this structurally, and so does a record (via a small
+ * anchor object built from recordAttrsAnchorLineIndex — see editRecordAttributes). */
+type KeywordHost = {
 	lineIndex: number;
 	lastLineIndex?: number;
-	recordname: string;
 	attributes?: { value: string; lineIndex: number }[];
 };
 
-function hasFlag(attributes: AttributeItem['attributes'], pattern: RegExp): boolean {
+type AttributeItem = KeywordHost & {
+	kind: 'field' | 'constant';
+	name: string;
+	type?: string;
+	recordname: string;
+};
+
+function hasFlag(attributes: KeywordHost['attributes'], pattern: RegExp): boolean {
 	return (attributes ?? []).some(attr => pattern.test(attr.value));
 };
 
@@ -79,10 +89,10 @@ function edtcdeDescription(code: string): string {
  * @param newRawKeywordText - The full replacement keyword text (e.g. "COLOR(RED)", "HIGHLIGHT",
  *   "TEXT('foo')"), or undefined to remove the keyword entirely.
  */
-function applyOrInsertKeyword(
+export function applyOrInsertKeyword(
 	document: vscode.TextDocument,
 	edit: vscode.WorkspaceEdit,
-	item: AttributeItem,
+	item: KeywordHost,
 	pattern: RegExp,
 	newRawKeywordText: string | undefined
 ): void {
@@ -221,8 +231,52 @@ export function editAttributesFromNode(node: PrtfNode): void {
 	void editAttributes(node.source.lineIndex);
 };
 
+/**
+ * Lets the user set or clear one of a record format's own appearance keywords — HIGHLIGHT (bolds
+ * every field/constant in the record that doesn't already override it) or ENDPAGE (an
+ * unconditional page eject right after this record prints) — the only two the preview actually
+ * renders at record level (unlike a field/constant, a record has no TEXT/COLOR/UNDERLINE/EDTCDE
+ * of its own). Reuses applyOrInsertKeyword via a small anchor object, since a record has no single
+ * lastLineIndex field of its own the way a field/constant does.
+ */
+export async function editRecordAttributes(record: PrtfRecord): Promise<void> {
+	const document = ExtensionState.lastPrtfDocument;
+	if (!document) {return;}
+
+	const highlightOn = hasFlag(record.attributes, HIGHLIGHT_PATTERN);
+	const endPageOn = hasFlag(record.attributes, ENDPAGE_PATTERN);
+
+	const choices: { label: string; description: string; attrKind: 'HIGHLIGHT' | 'ENDPAGE' }[] = [
+		{ label: 'HIGHLIGHT', description: highlightOn ? 'on' : 'off', attrKind: 'HIGHLIGHT' },
+		{ label: 'ENDPAGE', description: endPageOn ? 'on' : 'off', attrKind: 'ENDPAGE' },
+	];
+
+	const picked = await vscode.window.showQuickPick(choices, { placeHolder: `Edit an attribute of '${record.name}'` });
+	if (!picked) {return;}
+
+	const edit = new vscode.WorkspaceEdit();
+	const anchor: KeywordHost = { lineIndex: record.lineIndex, lastLineIndex: recordAttrsAnchorLineIndex(record), attributes: record.attributes };
+
+	if (picked.attrKind === 'HIGHLIGHT') {
+		applyOrInsertKeyword(document, edit, anchor, HIGHLIGHT_PATTERN, highlightOn ? undefined : 'HIGHLIGHT');
+	} else {
+		applyOrInsertKeyword(document, edit, anchor, ENDPAGE_PATTERN, endPageOn ? undefined : 'ENDPAGE');
+	};
+
+	const applied = await vscode.workspace.applyEdit(edit);
+	if (!applied) {
+		vscode.window.showErrorMessage('PRTF: could not apply the change — the document may be read-only.');
+	};
+};
+
+export function editRecordAttributesFromNode(node: PrtfNode): void {
+	if (!node || node.source.kind !== 'record') {return;}
+	void editRecordAttributes(node.source as PrtfRecord);
+};
+
 export function registerEditAttributesCommand(context: vscode.ExtensionContext): void {
 	context.subscriptions.push(
-		vscode.commands.registerCommand('prtf-edit.edit-attributes', editAttributesFromNode)
+		vscode.commands.registerCommand('prtf-edit.edit-attributes', editAttributesFromNode),
+		vscode.commands.registerCommand('prtf-edit.edit-record-attributes', editRecordAttributesFromNode)
 	);
 };

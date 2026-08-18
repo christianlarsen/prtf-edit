@@ -32,8 +32,7 @@
      A* manejo de salto de pagina todavia).
      A* 
      A          R TOTAL
+     A                                      SKIPB(58)
      A                                    47'TOTAL:'
-     A  50      
-     AO 51                                  SKIPB(58)
      A            IMPTOTAL       9S 2O    58
      A                                      EDTCDE(J *)

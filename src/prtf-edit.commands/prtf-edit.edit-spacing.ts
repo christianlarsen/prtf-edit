@@ -6,7 +6,9 @@
 
 import * as vscode from 'vscode';
 import { ExtensionState } from '../prtf-edit.states/state';
-import { isEmptyKeywordOnlyLine } from './prtf-edit.move-element';
+import { isEmptyKeywordOnlyLine, recordAttrsAnchorLineIndex } from './prtf-edit.move-element';
+import { PrtfRecord } from '../prtf-edit.model/prtf-edit.model';
+import { PrtfNode } from '../prtf-edit.providers/prtf-edit.providers';
 
 /** The four DDS keywords that control vertical flow positioning — see prtf-edit.parser.ts's
  * applySkipSpaceBefore/applySkipSpaceAfter for how they combine during simulation. */
@@ -69,15 +71,15 @@ function hasAnySpacingKeyword(attributes: { value: string }[] | undefined): bool
  * covers SKIPA/SKIPB (never touched by dragging) and setting an absolute jump instead of a
  * relative advance. Scoped to just this one item by default: adding a spacing keyword to an item
  * that still has an explicit Line blanks *that item's own* Line (the two can't coexist on the same
- * line without a CPD7826/CPD7860 conflict), but doesn't touch any other item in the record — if the
- * record ends up mixed as a result, the existing validator flags it.
+ * line without a CPD7826/CPD7860 conflict).
  *
- * Setting SKIPB specifically is the one case with a safe, general way to convert the *whole*
- * record in the same step, because — unlike SPACEB/SPACEA, which are relative and would need
- * reordering to handle items that aren't already in row order — SKIPB is an absolute jump, so
- * giving every other still-explicit item its own `SKIPB(<its current row>)` preserves the record's
- * exact current layout regardless of order. When there are other explicit items left, this offers
- * that as a choice rather than doing it silently.
+ * Any *other* field/constant in the record still using an explicit Line would still conflict with
+ * the record as a whole (CPD5238) once this one gets its own spacing keyword — rather than letting
+ * that slip through and rely on the validator to catch it after the fact, setting SKIPB offers to
+ * convert every other still-explicit item too, at its current row (safe and general, since SKIPB
+ * is an absolute jump); SPACEB/SPACEA/SKIPA can't be auto-converted the same way — they're
+ * relative, and would need the items reordered to match row order first — so those are simply
+ * blocked outright until the other items are converted (via SKIPB, or one at a time).
  * @param lineIndex - Zero-based source line of the field/constant to edit
  */
 export async function editSpacing(lineIndex: number): Promise<void> {
@@ -126,10 +128,12 @@ export async function editSpacing(lineIndex: number): Promise<void> {
 
 	const edit = new vscode.WorkspaceEdit();
 
-	// SKIPB, specifically, can safely stand in for *every* other still-explicit item in the record
-	// too (see the doc comment above) — offer to convert the whole record in one step rather than
-	// leaving the rest for separate right-clicks.
-	if (picked.keyword === 'SKIPB' && newValue !== undefined && item.positionSource === 'explicit') {
+	// Any *other* field/constant in the same record still using an explicit Line is a real
+	// CRTPRTF conflict (CPD5238/CPD7826/CPD7860 — see prtf-edit.validation.ts, which only catches
+	// this after the fact) once this item gets a SPACEA/SPACEB/SKIPA/SKIPB of its own — this
+	// item's *own* explicit Line (if any) is already handled below via shouldBlankLine, so what's
+	// left to worry about is only its siblings.
+	if (newValue !== undefined) {
 		const otherExplicitItems = ExtensionState.lastPrtfElements.filter((e: any) =>
 			(e.kind === 'field' || e.kind === 'constant') &&
 			e.recordname === item.recordname &&
@@ -138,25 +142,37 @@ export async function editSpacing(lineIndex: number): Promise<void> {
 		) as (SpacingItem & { lineIndex: number })[];
 
 		if (otherExplicitItems.length > 0) {
-			const choice = await vscode.window.showWarningMessage(
-				`'${item.recordname}' has ${otherExplicitItems.length} other field(s)/constant(s) still using an explicit Line — ` +
-				`left as-is, they'll conflict with this SKIPB. Convert them too, at their current row?`,
-				{ modal: true },
-				'Convert whole record', 'Just this item'
-			);
-			if (choice === undefined) {return;} // Cancelled — leave everything untouched.
-			if (choice === 'Convert whole record') {
-				for (const other of otherExplicitItems) {
-					if (other.row === undefined) {continue;};
-					const otherLine = document.lineAt(other.lineIndex);
-					edit.replace(document.uri, otherLine.range, blankLineNumber(otherLine.text));
-					if (!hasAnySpacingKeyword(other.attributes)) {
-						const anchorLineIndex = other.lastLineIndex ?? other.lineIndex;
-						const insertPosition = document.lineAt(anchorLineIndex).range.end;
-						const newLine = ' '.repeat(5) + 'A' + ' '.repeat(38) + `SKIPB(${other.row})`;
-						edit.insert(document.uri, insertPosition, '\n' + newLine);
+			// SKIPB, specifically, can safely stand in for *every* other still-explicit item in the
+			// record too (see the doc comment above) — offer to convert the whole record in one step
+			// rather than leaving the rest for separate right-clicks. SPACEB/SPACEA/SKIPA are
+			// relative and can't be auto-converted the same way (they'd need the items reordered to
+			// match row order first), so those are just blocked outright.
+			if (picked.keyword === 'SKIPB') {
+				const choice = await vscode.window.showWarningMessage(
+					`'${item.recordname}' has ${otherExplicitItems.length} other field(s)/constant(s) still using an explicit Line — ` +
+					`left as-is, they'll conflict with this SKIPB. Convert them too, at their current row?`,
+					{ modal: true },
+					'Convert whole record', 'Just this item'
+				);
+				if (choice === undefined) {return;} // Cancelled — leave everything untouched.
+				if (choice === 'Convert whole record') {
+					for (const other of otherExplicitItems) {
+						if (other.row === undefined) {continue;};
+						const otherLine = document.lineAt(other.lineIndex);
+						edit.replace(document.uri, otherLine.range, blankLineNumber(otherLine.text));
+						if (!hasAnySpacingKeyword(other.attributes)) {
+							const anchorLineIndex = other.lastLineIndex ?? other.lineIndex;
+							const insertPosition = document.lineAt(anchorLineIndex).range.end;
+							const newLine = ' '.repeat(5) + 'A' + ' '.repeat(38) + `SKIPB(${other.row})`;
+							edit.insert(document.uri, insertPosition, '\n' + newLine);
+						};
 					};
 				};
+			} else {
+				vscode.window.showErrorMessage(
+					`PRTF: '${item.recordname}' has ${otherExplicitItems.length} other field(s)/constant(s) still using an explicit Line — CRTPRTF rejects mixing that with ${picked.keyword}. Convert them to flow positioning first (SKIPB can convert the whole record in one step; ${picked.keyword} can't, since it's relative).`
+				);
+				return;
 			};
 		};
 	};
@@ -195,4 +211,100 @@ export async function editSpacing(lineIndex: number): Promise<void> {
 	if (!applied) {
 		vscode.window.showErrorMessage('PRTF: could not apply the change — the document may be read-only.');
 	};
+};
+
+/**
+ * Lets the user set or clear one of a record format's own SKIPB/SPACEB/SPACEA/SKIPA values —
+ * the tree's counterpart to editSpacing above, for a record instead of a field/constant. Much
+ * simpler than editSpacing: a record's own primary line has no Line/Position zone at all (see
+ * buildRecordLine, record-crud.ts), so there's no explicit-Line-vs-flow conflict to resolve and
+ * no "convert the whole record" case — that's specifically about a field/constant's own Line
+ * entry, which a record never has. The keyword can still be written inline on the record's own
+ * "R recordname" line (e.g. the samples' own "...R DETALLE   SPACEA(1)"), so that branch is kept.
+ */
+export async function editRecordSpacing(record: PrtfRecord): Promise<void> {
+	const document = ExtensionState.lastPrtfDocument;
+	if (!document) {return;}
+
+	const choices = SPACING_KEYWORDS.map(keyword => {
+		const currentValue = readKeywordValue(record.attributes, keyword);
+		return {
+			label: keyword,
+			description: currentValue !== undefined ? String(currentValue) : '(not set)',
+			detail: KEYWORD_DESCRIPTIONS[keyword],
+			keyword,
+			currentValue
+		};
+	});
+
+	const picked = await vscode.window.showQuickPick(choices, { placeHolder: `Which spacing keyword do you want to set or clear on '${record.name}'?` });
+	if (!picked) {return;}
+
+	const input = await vscode.window.showInputBox({
+		prompt: `${picked.keyword}(n) — 1 to 255, or leave blank to remove it`,
+		value: picked.currentValue !== undefined ? String(picked.currentValue) : '',
+		validateInput: value => {
+			const trimmed = value.trim();
+			if (trimmed === '') {return undefined;};
+			return /^[1-9][0-9]*$/.test(trimmed) && Number(trimmed) <= 255 ? undefined : 'Enter a whole number from 1 to 255, or leave blank to remove.';
+		}
+	});
+	if (input === undefined) {return;} // Cancelled.
+
+	const trimmed = input.trim();
+	const newValue = trimmed === '' ? undefined : Number(trimmed);
+	if (newValue === undefined && picked.currentValue === undefined) {return;} // Nothing to remove.
+
+	// CRTPRTF rejects the whole record format when a record-level SPACEA/SPACEB/SKIPA/SKIPB
+	// coexists with an explicit Line on any of its own fields/constants (CPD5238/CPD7826/CPD7860 —
+	// see prtf-edit.validation.ts, which only catches this *after* the fact). Only setting a new
+	// value is blocked here — clearing one is always allowed, since that's how an already-mixed
+	// record (e.g. hand-edited) gets fixed.
+	if (newValue !== undefined) {
+		const hasExplicitItems = ExtensionState.lastPrtfElements.some((e: any) =>
+			(e.kind === 'field' || e.kind === 'constant') && e.recordname === record.name && e.positionSource === 'explicit'
+		);
+		if (hasExplicitItems) {
+			vscode.window.showErrorMessage(
+				`PRTF: '${record.name}' has field(s)/constant(s) using an explicit Line — CRTPRTF rejects mixing that with a record-level ${picked.keyword}. Move them to flow positioning first (e.g. via "Edit spacing" on each one).`
+			);
+			return;
+		};
+	};
+
+	const edit = new vscode.WorkspaceEdit();
+	const existingAttr = (record.attributes ?? []).find(attr => keywordPattern(picked.keyword).test(attr.value));
+	const primaryLine = document.lineAt(record.lineIndex);
+
+	if (existingAttr && existingAttr.lineIndex === record.lineIndex) {
+		edit.replace(document.uri, primaryLine.range, applyKeywordToLine(primaryLine.text, picked.keyword, newValue));
+	} else if (existingAttr) {
+		const keywordLine = document.lineAt(existingAttr.lineIndex);
+		const updatedText = applyKeywordToLine(keywordLine.text, picked.keyword, newValue);
+		if (newValue === undefined && isEmptyKeywordOnlyLine(updatedText)) {
+			edit.delete(document.uri, keywordLine.rangeIncludingLineBreak);
+		} else {
+			edit.replace(document.uri, keywordLine.range, updatedText);
+		};
+	} else if (newValue !== undefined) {
+		const insertPosition = document.lineAt(recordAttrsAnchorLineIndex(record)).range.end;
+		const newLine = ' '.repeat(5) + 'A' + ' '.repeat(38) + `${picked.keyword}(${newValue})`;
+		edit.insert(document.uri, insertPosition, '\n' + newLine);
+	};
+
+	const applied = await vscode.workspace.applyEdit(edit);
+	if (!applied) {
+		vscode.window.showErrorMessage('PRTF: could not apply the change — the document may be read-only.');
+	};
+};
+
+export function editRecordSpacingFromNode(node: PrtfNode): void {
+	if (!node || node.source.kind !== 'record') {return;}
+	void editRecordSpacing(node.source as PrtfRecord);
+};
+
+export function registerEditRecordSpacingCommand(context: vscode.ExtensionContext): void {
+	context.subscriptions.push(
+		vscode.commands.registerCommand('prtf-edit.edit-record-spacing', editRecordSpacingFromNode)
+	);
 };

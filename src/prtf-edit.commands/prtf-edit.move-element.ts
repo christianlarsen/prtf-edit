@@ -155,6 +155,18 @@ export function findBlockEndLineIndex(elements: any[], afterLineIndex: number, t
 };
 
 /**
+ * Where a brand-new record-level attribute continuation line must land: right after the last one
+ * that already exists, or right after the record's own line if it has none — either way, always
+ * before the record's first field/constant (see linkAttributesToParents in parser.ts), which is
+ * what makes the new line actually belong to the record once reparsed, rather than misattaching
+ * to whatever field/constant happens to follow.
+ */
+export function recordAttrsAnchorLineIndex(record: { lineIndex: number; attributes?: { lineIndex: number; lastLineIndex?: number }[] }): number {
+	const attrs = record.attributes ?? [];
+	return attrs.length === 0 ? record.lineIndex : Math.max(...attrs.map(a => a.lastLineIndex ?? a.lineIndex));
+};
+
+/**
  * Swaps a flow-mode item's entire source block with the immediately preceding item's block — the
  * only way to make an item print earlier than a flow-mode neighbor, since DDS flow order is
  * strictly source order and SPACEB can't go negative (see findPreviousItemInRecord). Swaps the two

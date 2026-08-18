@@ -80,6 +80,14 @@
         "title": "Indicators..."
       },
       {
+        "command": "prtf-edit.edit-record-attributes",
+        "title": "Edit Attributes..."
+      },
+      {
+        "command": "prtf-edit.edit-record-spacing",
+        "title": "Edit Spacing..."
+      },
+      {
         "command": "prtf-edit.add-record",
         "title": "New Record...",
         "icon": "$(add)"
@@ -140,6 +148,16 @@
           "command": "prtf-edit.edit-indicators",
           "when": "view == prtf-edit.schema-view && (viewItem == field || viewItem == constant || viewItem == attribute)",
           "group": "1_modification@4"
+        },
+        {
+          "command": "prtf-edit.edit-record-attributes",
+          "when": "view == prtf-edit.schema-view && viewItem == record",
+          "group": "1_modification@1"
+        },
+        {
+          "command": "prtf-edit.edit-record-spacing",
+          "when": "view == prtf-edit.schema-view && viewItem == record",
+          "group": "1_modification@2"
         },
         {
           "command": "prtf-edit.add-record",

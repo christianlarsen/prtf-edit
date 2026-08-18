@@ -929,8 +929,15 @@ export class RecordPreviewPanel {
 				};
 				break;
 			case 'editSpacing':
-				if (this.sequence.length === 0 && typeof message.lineIndex === 'number') {
-					editSpacing(message.lineIndex);
+				if (this.sequence.length === 0) {
+					// Right-click always sends an explicit lineIndex (whatever's under the cursor,
+					// regardless of prior selection); the toolbar's own "↕️ Spacing" button doesn't —
+					// same convention as deleteItem/editAttributes — so it falls back to whatever's
+					// currently selected.
+					const spacingLineIndex = typeof message.lineIndex === 'number' ? message.lineIndex : this.highlightLineIndex;
+					if (typeof spacingLineIndex === 'number') {
+						editSpacing(spacingLineIndex);
+					};
 				};
 				break;
 			case 'deleteItem':
@@ -1328,6 +1335,7 @@ export class RecordPreviewPanel {
 			<button id="rulerBtn" class="${this.showRuler ? 'active' : ''}" title="Show row numbers and a column ruler (every 5 columns) alongside the page">📏 Ruler</button>
 			<button id="deleteItemBtn" ${this.highlightLineIndex === undefined ? 'disabled' : ''} title="Click a field/constant on the page first, then this to delete it entirely">🗑 Delete</button>
 			<button id="attributesBtn" ${this.highlightLineIndex === undefined ? 'disabled' : ''} title="Click a field/constant on the page first, then this to set TEXT/COLOR/HIGHLIGHT/UNDERLINE/EDTCDE">🎨 Attributes</button>
+			<button id="spacingBtn" ${this.highlightLineIndex === undefined ? 'disabled' : ''} title="Click a field/constant on the page first, then this to set/clear its SKIPB/SPACEB/SPACEA/SKIPA">↕️ Spacing</button>
 		</div>
 		<div id="toolbarRow4" class="toolbar-row">
 			${hasIndicators ? `<label id="indicatorsLabel" title="Simulate which indicators are on, to preview conditional fields/constants/keywords — including a conditioned SKIPB/SPACEB/SPACEA/SKIPA, which shifts everything printed after it">
@@ -1382,14 +1390,17 @@ export class RecordPreviewPanel {
 		const addFieldBtn = document.getElementById('addFieldBtn');
 		const deleteItemBtn = document.getElementById('deleteItemBtn');
 		const attributesBtn = document.getElementById('attributesBtn');
+		const spacingBtn = document.getElementById('spacingBtn');
 		let currentHighlightLine = ${JSON.stringify(this.highlightLineIndex ?? null)};
 		function refreshSelectionButtonsState() {
 			const disabled = composeToggle.checked || currentHighlightLine === null || currentHighlightLine === undefined;
 			deleteItemBtn.disabled = disabled;
 			attributesBtn.disabled = disabled;
+			spacingBtn.disabled = disabled;
 		};
 		deleteItemBtn.addEventListener('click', () => vscode.postMessage({ type: 'deleteItem' }));
 		attributesBtn.addEventListener('click', () => vscode.postMessage({ type: 'editAttributes' }));
+		spacingBtn.addEventListener('click', () => vscode.postMessage({ type: 'editSpacing' }));
 
 		// "Compose sequence": combine several record formats (each with a repeat count) onto one
 		// page instead of previewing a single one — see collectComposedPageItems.

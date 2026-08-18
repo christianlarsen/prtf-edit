@@ -439,6 +439,18 @@ function parseConstantElement(
  * standard DDS keyword-area window, columns 45-80 (`substring(39, 75)` on the 5-char-stripped
  * line). A line continues onto the next when the last non-blank character in that window is a
  * hyphen.
+ *
+ * Also handles a shape that isn't dash-continuation at all: RLU itself regenerates DDS source
+ * this way once a file's been round-tripped through it (confirmed against a real RLU/CRTPRTF
+ * save) — a constant's own Line/Position can land alone on its line, with nothing else on it, and
+ * its actual literal or system keyword only starts on the very next line, with no trailing hyphen
+ * anywhere. Without this, that next line reads as an empty value (the constant's own `name` ends
+ * up `''`) and the real text/keyword gets misattributed as if it were one of the constant's own
+ * *attributes* instead — invisible in the preview, since nothing renders a bare `name`. Detected
+ * by peeking one line ahead: if this line's own keyword zone is blank, and the next line has no
+ * field name, Line, or Position of its own (so it structurally can't be anything but a
+ * continuation of *something*) and isn't a record line or a comment, treat it as where the
+ * constant's value actually starts, then apply the normal dash-continuation logic from there.
  */
 function extractMultiLineConstant(
     lines: string[],
@@ -446,8 +458,27 @@ function extractMultiLineConstant(
     trimmedLine: string
 ): { fullValue: string; lastLineIndex: number } {
 
-    let fullValue = trimmedLine.substring(39, 75);
-    let continuationIndex = startIndex;
+    let valueLine = trimmedLine;
+    let valueStartIndex = startIndex;
+
+    if (trimmedLine.substring(39, 75).trim() === '') {
+        const nextLine = lines[startIndex + 1];
+        if (nextLine !== undefined) {
+            const nextTrimmed = nextLine.substring(5);
+            const isCommentLine = nextTrimmed.charAt(1) === '*';
+            const nextComponents = extractLineComponents(nextTrimmed);
+            const isBareContinuation = !isCommentLine && !isRecordLine(nextTrimmed) &&
+                !nextComponents.fieldName && nextComponents.row === undefined && nextComponents.col === undefined &&
+                nextTrimmed.substring(39, 75).trim() !== '';
+            if (isBareContinuation) {
+                valueLine = nextTrimmed;
+                valueStartIndex = startIndex + 1;
+            };
+        };
+    };
+
+    let fullValue = valueLine.substring(39, 75);
+    let continuationIndex = valueStartIndex;
 
     while (fullValue.trimEnd().endsWith('-')) {
         const trimmedEnd = fullValue.trimEnd();
