@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.1.1] - 2026-08-23
+
+### Fixed
+- README badges: the version/installs/rating badges from `vsmarketplacebadges.dev` render as broken images on the Marketplace listing (an ongoing, known outage affecting that service and shields.io's own dynamic Marketplace badges alike). Replaced with static badges (license, a plain link to the Marketplace listing) that don't depend on that API.
+
 ## [0.1.0] - 2026-08-23
 
 ### Added
