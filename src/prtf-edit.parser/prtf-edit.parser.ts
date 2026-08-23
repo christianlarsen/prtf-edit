@@ -741,16 +741,26 @@ export interface FlowSimulationResult {
  *   the *resolved* position (used by drag, add, edit-spacing, etc. — every other caller, which
  *   never pass this) depending on any ephemeral preview UI state. Undefined (every caller but the
  *   preview) means every attribute is active, i.e. today's unconditional behavior.
+ * @param fileAttributes - The file's own attributes (PrtfFile.attributes), for its own SKIPB/
+ *   SKIPA (the only two spacing keywords valid at file level — see FILE_SPACING_KEYWORDS in
+ *   edit-spacing.ts). Per IBM's DDS reference, a file-level SKIPB/SKIPA applies before/after
+ *   *every* record format in the file prints — not a one-time page-boundary event — nested as the
+ *   outermost layer: SKIPB runs file, then record, then field (each refining the position further
+ *   before printing); SKIPA runs field, then record, then file (each advancing further after).
+ *   Omitted (every caller but positionRecordEntry and the flow-mode helpers below) behaves as
+ *   today, with no file-level contribution.
  */
 export function simulateRecordFlow(
     record: PrtfRecord,
     items: (PrtfField | PrtfConstant)[],
     startLine: number,
-    isAttributeActive?: (attr: PrtfAttribute) => boolean
+    isAttributeActive?: (attr: PrtfAttribute) => boolean,
+    fileAttributes?: PrtfAttribute[]
 ): FlowSimulationResult {
     const rows = new Map<number, number>();
     const baselineBefore = new Map<number, number>();
-    let currentLine = applySkipSpaceBefore(record.attributes, startLine, isAttributeActive);
+    let currentLine = applySkipSpaceBefore(fileAttributes, startLine, isAttributeActive);
+    currentLine = applySkipSpaceBefore(record.attributes, currentLine, isAttributeActive);
 
     for (const item of items) {
         baselineBefore.set(item.lineIndex, currentLine);
@@ -768,6 +778,7 @@ export function simulateRecordFlow(
     // resolve), only to `endLine`, which is why resolveFlowModePositions below never needed it —
     // there's no "next" to feed when a record is parsed/previewed in isolation.
     currentLine = applySkipSpaceAfter(record.attributes, currentLine, isAttributeActive);
+    currentLine = applySkipSpaceAfter(fileAttributes, currentLine, isAttributeActive);
 
     return { rows, baselineBefore, endLine: currentLine };
 };
@@ -783,6 +794,7 @@ export function simulateRecordFlow(
  */
 function resolveFlowModePositions(prtfElements: PrtfElement[]): void {
     const recordElements = prtfElements.filter((el): el is PrtfRecord => el.kind === 'record');
+    const fileAttributes = prtfElements.find((el): el is PrtfFile => el.kind === 'file')?.attributes;
 
     for (const record of recordElements) {
         const items = prtfElements
@@ -792,7 +804,7 @@ function resolveFlowModePositions(prtfElements: PrtfElement[]): void {
 
         if (items.length === 0 || items.some(item => item.positionSource === 'explicit')) {continue;};
 
-        const { rows } = simulateRecordFlow(record, items, 0);
+        const { rows } = simulateRecordFlow(record, items, 0, undefined, fileAttributes);
         for (const item of items) {
             item.row = rows.get(item.lineIndex);
             item.positionSource = 'flow';
@@ -829,7 +841,8 @@ export function resolveFlowModeInsertion(elements: PrtfElement[], recordName: st
         return { isFlowMode: false };
     };
 
-    const { rows } = simulateRecordFlow(record, items, 0);
+    const fileAttributes = elements.find((el): el is PrtfFile => el.kind === 'file')?.attributes;
+    const { rows } = simulateRecordFlow(record, items, 0, undefined, fileAttributes);
     const lastItem = items[items.length - 1];
     return { isFlowMode: true, lastItemRow: rows.get(lastItem.lineIndex) ?? 1 };
 };
@@ -896,7 +909,8 @@ export function resolveFlowModeMove(
 
     const hasOwnSkipB = (targetItem.attributes ?? []).some(attr => /\bSKIPB\(/i.test(attr.value));
 
-    const { rows, baselineBefore } = simulateRecordFlow(record, items, 0, isAttributeActive);
+    const fileAttributes = elements.find((el): el is PrtfFile => el.kind === 'file')?.attributes;
+    const { rows, baselineBefore } = simulateRecordFlow(record, items, 0, isAttributeActive, fileAttributes);
     return {
         isFlowMode: true,
         baselineRow: baselineBefore.get(targetLineIndex) ?? 0,

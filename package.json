@@ -2,12 +2,13 @@
   "name": "prtf-edit",
   "displayName": "Printer File DDS edit",
   "description": "Extension that helps you create and modify your printer file DDS on IBM i",
+  "icon": "assets/prtf_extension_icon.png",
   "author": {
     "name": "Christian Larsen",
     "url": "https://www.linkedin.com/in/christianlarsenvalverde/"
   },
   "publisher": "ChristianLarsen",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/christianlarsen/prtf-edit"
@@ -84,6 +85,10 @@
         "title": "Edit Attributes..."
       },
       {
+        "command": "prtf-edit.edit-file-spacing",
+        "title": "Edit Spacing..."
+      },
+      {
         "command": "prtf-edit.edit-record-spacing",
         "title": "Edit Spacing..."
       },
@@ -152,6 +157,11 @@
         {
           "command": "prtf-edit.edit-record-attributes",
           "when": "view == prtf-edit.schema-view && viewItem == record",
+          "group": "1_modification@1"
+        },
+        {
+          "command": "prtf-edit.edit-file-spacing",
+          "when": "view == prtf-edit.schema-view && viewItem == file",
           "group": "1_modification@1"
         },
         {

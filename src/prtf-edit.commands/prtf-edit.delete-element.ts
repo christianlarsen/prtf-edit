@@ -59,8 +59,9 @@ export async function deleteElement(lineIndex: number): Promise<void> {
 		const nextItem: DeletableItem | undefined = index >= 0 && index < items.length - 1 ? items[index + 1] : undefined;
 
 		if (record && nextItem) {
-			const before = simulateRecordFlow(record, items, 0);
-			const after = simulateRecordFlow(record, items.filter((_: any, i: number) => i !== index), 0);
+			const fileAttributes = elements.find((e: any) => e.kind === 'file')?.attributes;
+			const before = simulateRecordFlow(record, items, 0, undefined, fileAttributes);
+			const after = simulateRecordFlow(record, items.filter((_: any, i: number) => i !== index), 0, undefined, fileAttributes);
 			const oldRow = before.rows.get(nextItem.lineIndex);
 			const newRow = after.rows.get(nextItem.lineIndex);
 

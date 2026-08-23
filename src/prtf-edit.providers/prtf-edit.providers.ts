@@ -5,8 +5,10 @@
 */
 
 import * as vscode from 'vscode';
+import * as path from 'path';
 import {
 	PrtfElement,
+	PrtfFile,
 	PrtfRecord,
 	PrtfField,
 	PrtfConstant,
@@ -19,7 +21,7 @@ import { ExtensionState } from '../prtf-edit.states/state';
 /** What a synthetic (non-parsed) group node organizes — carries enough context (which record,
  * which field/constant by line) for getParent() to reconstruct the chain up to the root without
  * needing a live tree-walk, which VS Code's TreeView.reveal() requires. */
-type GroupRole = 'file' | 'records' | 'recordAttrs' | 'recordFields' | 'itemIndicators' | 'itemAttrs' | 'leafGroup';
+type GroupRole = 'fileAttrs' | 'records' | 'recordAttrs' | 'recordFields' | 'itemIndicators' | 'itemAttrs' | 'leafGroup';
 
 interface GroupNode {
 	kind: 'treeGroup';
@@ -96,6 +98,8 @@ export class PrtfTreeProvider implements vscode.TreeDataProvider<PrtfNode> {
 		switch (source.kind) {
 			case 'treeGroup':
 				return this.wrapChildren(source.children);
+			case 'file':
+				return this.getFileChildren(source);
 			case 'record':
 				return this.getRecordChildren(source);
 			case 'field':
@@ -122,11 +126,16 @@ export class PrtfTreeProvider implements vscode.TreeDataProvider<PrtfNode> {
 			return this.recordsRootGroup();
 		};
 
+		if (source.kind === 'file') {
+			return undefined;
+		};
+
 		if (source.kind === 'treeGroup') {
 			switch (source.role) {
-				case 'file':
 				case 'records':
 					return undefined;
+				case 'fileAttrs':
+					return this.fileRootNode();
 				case 'recordAttrs':
 				case 'recordFields': {
 					const record = this.findRecord(source.recordName!);
@@ -190,18 +199,30 @@ export class PrtfTreeProvider implements vscode.TreeDataProvider<PrtfNode> {
 			return [placeholderNode('Open a PRTF source member')];
 		};
 
-		const fileNode = this.elements.find(e => e.kind === 'file');
-		const fileAttributes = (fileNode as any)?.attributes as PrtfAttribute[] | undefined;
-
 		const nodes: PrtfNode[] = [];
-		if (fileAttributes && fileAttributes.length > 0) {
-			const fileGroup: GroupNode = { kind: 'treeGroup', role: 'file', id: 'grp:file', label: '📂 File', children: fileAttributes };
-			nodes.push(wrapGroup(fileGroup, vscode.TreeItemCollapsibleState.Collapsed));
-		};
+		const file = this.fileRootNode();
+		if (file) {nodes.push(file);};
 
 		nodes.push(this.recordsRootGroup());
 
 		return nodes;
+	};
+
+	/** The "📂 File (...)" root node — a real node (not a synthetic group) wrapping the parser's
+	 * own PrtfFile, same shape as recordNode/record, so its "Edit Attributes..." context menu can
+	 * target a plain `viewItem == file`. Always Collapsed (matching dspf-edit's own file node,
+	 * which the tree of every other DDS-editing member of this family already uses) — it always has
+	 * exactly one child (the Attributes group below), whether or not that group itself is empty. */
+	private fileRootNode(): PrtfNode | undefined {
+		const file = this.elements.find((e): e is PrtfFile => e.kind === 'file');
+		if (!file) {return undefined;}
+		const document = ExtensionState.lastPrtfDocument;
+		const fileName = document ? path.basename(document.fileName) : 'Unknown';
+		return fileNode(file, fileName);
+	};
+
+	private getFileChildren(file: PrtfFile): PrtfNode[] {
+		return [fileAttrsGroupNode(file)];
 	};
 
 	private getRecordChildren(record: PrtfRecord): PrtfNode[] {
@@ -250,6 +271,19 @@ function wrapGroup(group: GroupNode, collapsibleState: vscode.TreeItemCollapsibl
 
 function placeholderNode(message: string): PrtfNode {
 	return new PrtfNode('placeholder', message, vscode.TreeItemCollapsibleState.None, { kind: 'treeGroup', role: 'leafGroup', id: 'placeholder', label: message, children: [] });
+};
+
+function fileNode(file: PrtfFile, fileName: string): PrtfNode {
+	return new PrtfNode('file', `📂 File (${fileName})`, vscode.TreeItemCollapsibleState.Collapsed, file);
+};
+
+function fileAttrsGroupNode(file: PrtfFile): PrtfNode {
+	const attributes = file.attributes ?? [];
+	const group: GroupNode = {
+		kind: 'treeGroup', role: 'fileAttrs', id: 'grp:file:attrs',
+		label: `⚙️ Attributes (${attributes.length})`, children: attributes
+	};
+	return wrapGroup(group, attributes.length > 0 ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
 };
 
 function recordNode(record: PrtfRecord): PrtfNode {

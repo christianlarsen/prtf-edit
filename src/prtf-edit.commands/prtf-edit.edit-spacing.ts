@@ -7,13 +7,21 @@
 import * as vscode from 'vscode';
 import { ExtensionState } from '../prtf-edit.states/state';
 import { isEmptyKeywordOnlyLine, recordAttrsAnchorLineIndex } from './prtf-edit.move-element';
-import { PrtfRecord } from '../prtf-edit.model/prtf-edit.model';
+import { PrtfFile, PrtfRecord } from '../prtf-edit.model/prtf-edit.model';
 import { PrtfNode } from '../prtf-edit.providers/prtf-edit.providers';
 
 /** The four DDS keywords that control vertical flow positioning — see prtf-edit.parser.ts's
  * applySkipSpaceBefore/applySkipSpaceAfter for how they combine during simulation. */
 const SPACING_KEYWORDS = ['SKIPB', 'SPACEB', 'SPACEA', 'SKIPA'] as const;
 type SpacingKeyword = typeof SPACING_KEYWORDS[number];
+
+/** Of the four, only these two are valid at file level (confirmed against IBM's DDS reference —
+ * SKIPB/SKIPA there are absolute jumps, so "file-wide default" is well-defined; SPACEB/SPACEA are
+ * relative to whatever printed immediately before, which has no single file-wide meaning — RLU's
+ * own "Work with File Keywords" screen agrees, listing SKIPA/SKIPB but not SPACEA/SPACEB). Applies
+ * as the default for every record that doesn't set its own SKIPB/SKIPA, the same one-per-level
+ * cascade record-level already applies to its own fields. */
+const FILE_SPACING_KEYWORDS = ['SKIPB', 'SKIPA'] as const satisfies readonly SpacingKeyword[];
 
 const KEYWORD_DESCRIPTIONS: Record<SpacingKeyword, string> = {
 	SKIPB: 'Jump to an absolute line before printing this item (never moves backwards)',
@@ -303,8 +311,82 @@ export function editRecordSpacingFromNode(node: PrtfNode): void {
 	void editRecordSpacing(node.source as PrtfRecord);
 };
 
+/**
+ * Lets the user set or clear the file's own SKIPB/SKIPA (see FILE_SPACING_KEYWORDS above for why
+ * SPACEB/SPACEA are excluded). Structurally identical to editRecordSpacing, minus the explicit-
+ * Line conflict check that one runs before allowing a new value: unlike a record-level SPACEA/
+ * SPACEB/SKIPA/SKIPB, which CRTPRTF rejects outright when any of that same record's own fields
+ * still use an explicit Line, a file-level SKIPB/SKIPA is documented as applying "for all records"
+ * without that restriction — it simply doesn't affect a record that positions everything
+ * explicitly, rather than conflicting with it.
+ */
+export async function editFileSpacing(file: PrtfFile): Promise<void> {
+	const document = ExtensionState.lastPrtfDocument;
+	if (!document) {return;}
+
+	const choices = FILE_SPACING_KEYWORDS.map(keyword => {
+		const currentValue = readKeywordValue(file.attributes, keyword);
+		return {
+			label: keyword,
+			description: currentValue !== undefined ? String(currentValue) : '(not set)',
+			detail: KEYWORD_DESCRIPTIONS[keyword],
+			keyword,
+			currentValue
+		};
+	});
+
+	const picked = await vscode.window.showQuickPick(choices, { placeHolder: 'Which file-level spacing keyword do you want to set or clear?' });
+	if (!picked) {return;}
+
+	const input = await vscode.window.showInputBox({
+		prompt: `${picked.keyword}(n) — 1 to 255, or leave blank to remove it`,
+		value: picked.currentValue !== undefined ? String(picked.currentValue) : '',
+		validateInput: value => {
+			const trimmed = value.trim();
+			if (trimmed === '') {return undefined;};
+			return /^[1-9][0-9]*$/.test(trimmed) && Number(trimmed) <= 255 ? undefined : 'Enter a whole number from 1 to 255, or leave blank to remove.';
+		}
+	});
+	if (input === undefined) {return;} // Cancelled.
+
+	const trimmed = input.trim();
+	const newValue = trimmed === '' ? undefined : Number(trimmed);
+	if (newValue === undefined && picked.currentValue === undefined) {return;} // Nothing to remove.
+
+	const edit = new vscode.WorkspaceEdit();
+	const existingAttr = (file.attributes ?? []).find(attr => keywordPattern(picked.keyword).test(attr.value));
+	const primaryLine = document.lineAt(file.lineIndex);
+
+	if (existingAttr && existingAttr.lineIndex === file.lineIndex) {
+		edit.replace(document.uri, primaryLine.range, applyKeywordToLine(primaryLine.text, picked.keyword, newValue));
+	} else if (existingAttr) {
+		const keywordLine = document.lineAt(existingAttr.lineIndex);
+		const updatedText = applyKeywordToLine(keywordLine.text, picked.keyword, newValue);
+		if (newValue === undefined && isEmptyKeywordOnlyLine(updatedText)) {
+			edit.delete(document.uri, keywordLine.rangeIncludingLineBreak);
+		} else {
+			edit.replace(document.uri, keywordLine.range, updatedText);
+		};
+	} else if (newValue !== undefined) {
+		const insertPosition = document.lineAt(recordAttrsAnchorLineIndex(file)).range.end;
+		const newLine = ' '.repeat(5) + 'A' + ' '.repeat(38) + `${picked.keyword}(${newValue})`;
+		edit.insert(document.uri, insertPosition, '\n' + newLine);
+	};
+
+	const applied = await vscode.workspace.applyEdit(edit);
+	if (!applied) {
+		vscode.window.showErrorMessage('PRTF: could not apply the change — the document may be read-only.');
+	};
+};
+
+export function editFileSpacingFromNode(node: PrtfNode): void {
+	if (!node || node.source.kind !== 'file') {return;}
+	void editFileSpacing(node.source as PrtfFile);
+};
+
 export function registerEditRecordSpacingCommand(context: vscode.ExtensionContext): void {
 	context.subscriptions.push(
-		vscode.commands.registerCommand('prtf-edit.edit-record-spacing', editRecordSpacingFromNode)
+		vscode.commands.registerCommand('prtf-edit.edit-record-spacing', editRecordSpacingFromNode),
+		vscode.commands.registerCommand('prtf-edit.edit-file-spacing', editFileSpacingFromNode)
 	);
 };

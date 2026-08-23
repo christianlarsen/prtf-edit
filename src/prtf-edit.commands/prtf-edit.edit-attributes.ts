@@ -25,6 +25,19 @@ const TEXT_PATTERN = /\s?\bTEXT\(\s*'(?:[^']|'')*'\s*\)/i;
 /** Record-level only — an unconditional page eject right after that record prints (see
  * hasEndPage, record-preview-panel.ts). */
 const ENDPAGE_PATTERN = /\s?\bENDPAGE\b/i;
+/** FONT's own parameter can itself carry a nested `(*POINTSIZE h w)` group — one level of nesting
+ * (`\([^()]*\)`) is as far as the real keyword ever goes, so a flat `[^)]*` (fine for COLOR/EDTCDE,
+ * which never nest) would stop at the *inner* close-paren and truncate the match. The left
+ * boundary is `\b` OR "immediately preceded by a digit" — same reasoning as edit-spacing.ts's own
+ * keywordPattern: a fixed-column Position value often abuts the keyword zone with no space (e.g.
+ * the DDS reference's own "20CHRID" example), where plain `\b` (digit and letter are both "word"
+ * characters to it) would miss the boundary entirely. Capture group 1 is the raw inner text, for
+ * prefilling the edit box. */
+const FONT_PATTERN = /\s?(?:\b|(?<=\d))FONT\(((?:[^()]|\([^()]*\))*)\)/i;
+/** Field-level only, no parameters — like HIGHLIGHT/UNDERLINE, but with the same digit-boundary
+ * trick as FONT_PATTERN: the DDS reference's own CHRID example ("20CHRID") abuts a Position digit
+ * directly with no space. */
+const CHRID_PATTERN = /\s?(?:\b|(?<=\d))CHRID\b/i;
 
 /** The minimal shape applyOrInsertKeyword actually needs — anything with a primary line, an
  * optional last-line anchor for appending a new continuation line, and its own attribute list.
@@ -67,6 +80,33 @@ function currentColorCode(attributes: AttributeItem['attributes']): string | und
 		if (match) {return match[1].toUpperCase();};
 	};
 	return undefined;
+};
+
+/** Current FONT(...) parameter text, raw (whatever the user last typed — numeric ID, graphic font
+ * name, *VECTOR, optionally with a trailing `(*POINTSIZE h w)`) — no attempt to parse or validate
+ * its shape, matching the free-text edit box this feeds (same "documentation-only, edited as
+ * plain text" spirit as TEXT, since the preview's monospace grid can't render an actual typeface
+ * to check the value against). */
+function currentFontValue(attributes: KeywordHost['attributes']): string | undefined {
+	for (const attr of attributes ?? []) {
+		const match = attr.value.match(FONT_PATTERN);
+		if (match) {return match[1].trim();};
+	};
+	return undefined;
+};
+
+/**
+ * True when a FONT(...) value names a graphic font (an alphanumeric name, or *VECTOR) rather than
+ * a numeric hardware font ID — the distinction the DDS reference's CHRID keyword actually cares
+ * about: "FONT(graphic-font-name) and CHRID cannot apply to the same field" (a numeric FONT is
+ * fine alongside CHRID; CHRID is simply ignored, not rejected, when a graphic FONT is in effect —
+ * but there's no way for this editor to write a keyword combination it already knows is a no-op).
+ * @param fontValue - The raw text between FONT( and its closing paren (see currentFontValue) —
+ *   e.g. "222", "ADMMVSS", "*VECTOR", or "222 (*POINTSIZE 10.0)".
+ */
+function isGraphicFontName(fontValue: string): boolean {
+	const identifier = fontValue.replace(/\(\s*\*POINTSIZE[^)]*\)\s*$/i, '').trim();
+	return !/^\d+$/.test(identifier);
 };
 
 function edtcdeDescription(code: string): string {
@@ -143,20 +183,32 @@ export async function editAttributes(lineIndex: number): Promise<void> {
 	const currentText = findTextKeyword(item.attributes as PrtfAttribute[] | undefined);
 	const currentColor = currentColorCode(item.attributes);
 	const currentEdtcde = parseEdtcde(item.attributes as PrtfAttribute[] | undefined);
+	const currentFont = currentFontValue(item.attributes);
 	const highlightOn = hasFlag(item.attributes, HIGHLIGHT_PATTERN);
 	const underlineOn = hasFlag(item.attributes, UNDERLINE_PATTERN);
+	const chridOn = hasFlag(item.attributes, CHRID_PATTERN);
+	// A field with no FONT of its own still inherits its record's — if that's a graphic font name,
+	// CHRID is just as ineffective on this field as if it had that same FONT directly (see
+	// isGraphicFontName's own doc comment).
+	const record = ExtensionState.lastPrtfElements.find((e: any) => e.kind === 'record' && e.name === item.recordname) as PrtfRecord | undefined;
+	const effectiveFont = currentFont ?? currentFontValue(record?.attributes);
 
 	// Note: the choice's own discriminator is named `attrKind`, not `kind` — QuickPickItem already
 	// declares a `kind` property of its own (QuickPickItemKind, used for separators), which a same-
 	// named custom field would collide with.
-	const choices: { label: string; description: string; attrKind: 'TEXT' | 'COLOR' | 'HIGHLIGHT' | 'UNDERLINE' | 'EDTCDE' }[] = [
+	const choices: { label: string; description: string; attrKind: 'TEXT' | 'COLOR' | 'HIGHLIGHT' | 'UNDERLINE' | 'EDTCDE' | 'FONT' | 'CHRID' }[] = [
 		{ label: 'TEXT', description: currentText ? `"${currentText}"` : '(not set)', attrKind: 'TEXT' },
 		{ label: 'COLOR', description: currentColor ?? '(none)', attrKind: 'COLOR' },
 		{ label: 'HIGHLIGHT', description: highlightOn ? 'on' : 'off', attrKind: 'HIGHLIGHT' },
 		{ label: 'UNDERLINE', description: underlineOn ? 'on' : 'off', attrKind: 'UNDERLINE' },
+		{ label: 'FONT', description: currentFont ? `(${currentFont})` : '(none)', attrKind: 'FONT' },
 	];
 	if (isNumericField || isPagnbr) {
 		choices.push({ label: 'EDTCDE', description: currentEdtcde ? currentEdtcde.code + (currentEdtcde.currency ? ` ${currentEdtcde.currency}` : '') : '(none)', attrKind: 'EDTCDE' });
+	};
+	// Not valid on constant fields or numeric fields (DDS reference, CHRID keyword).
+	if (item.kind === 'field' && !isNumericField) {
+		choices.push({ label: 'CHRID', description: chridOn ? 'on' : 'off', attrKind: 'CHRID' });
 	};
 
 	const picked = await vscode.window.showQuickPick(choices, { placeHolder: `Edit an attribute of '${item.name}'` });
@@ -193,6 +245,31 @@ export async function editAttributes(lineIndex: number): Promise<void> {
 
 	} else if (picked.attrKind === 'UNDERLINE') {
 		applyOrInsertKeyword(document, edit, item, UNDERLINE_PATTERN, underlineOn ? undefined : 'UNDERLINE');
+
+	} else if (picked.attrKind === 'FONT') {
+		const input = await vscode.window.showInputBox({
+			prompt: `FONT(...) — a numeric font ID, a graphic font name, or *VECTOR, optionally followed by (*POINTSIZE height width). Leave blank to remove.`,
+			value: currentFont ?? '',
+			validateInput: value => {
+				const rawLength = `FONT(${value})`.length;
+				return rawLength > KEYWORD_ZONE_WIDTH ? `Too long to fit on one line (${rawLength}/${KEYWORD_ZONE_WIDTH} characters).` : undefined;
+			}
+		});
+		if (input === undefined) {return;} // Cancelled.
+		const newRaw = input === '' ? undefined : `FONT(${input})`;
+		if (newRaw === undefined && currentFont === undefined) {return;} // Nothing to remove.
+		if (newRaw !== undefined && chridOn && isGraphicFontName(input)) {
+			vscode.window.showErrorMessage(`PRTF: '${item.name}' already has CHRID — FONT('${input}') is a graphic font name, and CHRID and a graphic FONT can't apply to the same field. Remove CHRID first, or use a numeric font ID instead.`);
+			return;
+		};
+		applyOrInsertKeyword(document, edit, item, FONT_PATTERN, newRaw);
+
+	} else if (picked.attrKind === 'CHRID') {
+		if (!chridOn && effectiveFont !== undefined && isGraphicFontName(effectiveFont)) {
+			vscode.window.showErrorMessage(`PRTF: can't enable CHRID on '${item.name}' — it ${currentFont ? '' : `inherits from '${item.recordname}' `}a graphic FONT('${effectiveFont}'), and CHRID and a graphic FONT can't apply to the same field. Give it a numeric FONT (or remove FONT) first.`);
+			return;
+		};
+		applyOrInsertKeyword(document, edit, item, CHRID_PATTERN, chridOn ? undefined : 'CHRID');
 
 	} else if (picked.attrKind === 'EDTCDE') {
 		const codeChoices = [
@@ -233,11 +310,13 @@ export function editAttributesFromNode(node: PrtfNode): void {
 
 /**
  * Lets the user set or clear one of a record format's own appearance keywords — HIGHLIGHT (bolds
- * every field/constant in the record that doesn't already override it) or ENDPAGE (an
- * unconditional page eject right after this record prints) — the only two the preview actually
- * renders at record level (unlike a field/constant, a record has no TEXT/COLOR/UNDERLINE/EDTCDE
- * of its own). Reuses applyOrInsertKeyword via a small anchor object, since a record has no single
- * lastLineIndex field of its own the way a field/constant does.
+ * every field/constant in the record that doesn't already override it), ENDPAGE (an unconditional
+ * page eject right after this record prints), or FONT (the default font for every field in the
+ * record, same free-text edit as field-level FONT — see editAttributes) — the only ones the
+ * preview actually renders or otherwise understands at record level (unlike a field/constant, a
+ * record has no TEXT/COLOR/UNDERLINE/EDTCDE/CHRID of its own). Reuses applyOrInsertKeyword via a
+ * small anchor object, since a record has no single lastLineIndex field of its own the way a
+ * field/constant does.
  */
 export async function editRecordAttributes(record: PrtfRecord): Promise<void> {
 	const document = ExtensionState.lastPrtfDocument;
@@ -245,10 +324,12 @@ export async function editRecordAttributes(record: PrtfRecord): Promise<void> {
 
 	const highlightOn = hasFlag(record.attributes, HIGHLIGHT_PATTERN);
 	const endPageOn = hasFlag(record.attributes, ENDPAGE_PATTERN);
+	const currentFont = currentFontValue(record.attributes);
 
-	const choices: { label: string; description: string; attrKind: 'HIGHLIGHT' | 'ENDPAGE' }[] = [
+	const choices: { label: string; description: string; attrKind: 'HIGHLIGHT' | 'ENDPAGE' | 'FONT' }[] = [
 		{ label: 'HIGHLIGHT', description: highlightOn ? 'on' : 'off', attrKind: 'HIGHLIGHT' },
 		{ label: 'ENDPAGE', description: endPageOn ? 'on' : 'off', attrKind: 'ENDPAGE' },
+		{ label: 'FONT', description: currentFont ? `(${currentFont})` : '(none)', attrKind: 'FONT' },
 	];
 
 	const picked = await vscode.window.showQuickPick(choices, { placeHolder: `Edit an attribute of '${record.name}'` });
@@ -259,8 +340,35 @@ export async function editRecordAttributes(record: PrtfRecord): Promise<void> {
 
 	if (picked.attrKind === 'HIGHLIGHT') {
 		applyOrInsertKeyword(document, edit, anchor, HIGHLIGHT_PATTERN, highlightOn ? undefined : 'HIGHLIGHT');
-	} else {
+	} else if (picked.attrKind === 'ENDPAGE') {
 		applyOrInsertKeyword(document, edit, anchor, ENDPAGE_PATTERN, endPageOn ? undefined : 'ENDPAGE');
+	} else {
+		const input = await vscode.window.showInputBox({
+			prompt: `FONT(...) — a numeric font ID, a graphic font name, or *VECTOR, optionally followed by (*POINTSIZE height width). Leave blank to remove.`,
+			value: currentFont ?? '',
+			validateInput: value => {
+				const rawLength = `FONT(${value})`.length;
+				return rawLength > KEYWORD_ZONE_WIDTH ? `Too long to fit on one line (${rawLength}/${KEYWORD_ZONE_WIDTH} characters).` : undefined;
+			}
+		});
+		if (input === undefined) {return;} // Cancelled.
+		const newRaw = input === '' ? undefined : `FONT(${input})`;
+		if (newRaw === undefined && currentFont === undefined) {return;} // Nothing to remove.
+		if (newRaw !== undefined && isGraphicFontName(input)) {
+			// A graphic FONT set here cascades to every field in the record that doesn't override it
+			// with its own numeric FONT — CHRID on any such field would silently stop working (see
+			// isGraphicFontName's own doc comment), so this needs the same block field-level FONT
+			// already gets, just checked across every field instead of just one.
+			const conflictingField = (ExtensionState.lastPrtfElements as any[]).find(e =>
+				e.kind === 'field' && e.recordname === record.name && hasFlag(e.attributes, CHRID_PATTERN) &&
+				!(currentFontValue(e.attributes) !== undefined && !isGraphicFontName(currentFontValue(e.attributes)!))
+			);
+			if (conflictingField) {
+				vscode.window.showErrorMessage(`PRTF: can't set a graphic FONT('${input}') on '${record.name}' — field '${conflictingField.name}' has CHRID with no numeric FONT of its own to override it, and CHRID and a graphic FONT can't apply to the same field. Give that field a numeric FONT (or remove its CHRID) first.`);
+				return;
+			};
+		};
+		applyOrInsertKeyword(document, edit, anchor, FONT_PATTERN, newRaw);
 	};
 
 	const applied = await vscode.workspace.applyEdit(edit);

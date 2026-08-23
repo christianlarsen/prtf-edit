@@ -5,7 +5,7 @@
 */
 
 import * as vscode from 'vscode';
-import { PrtfElement, PrtfField, PrtfConstant, PrtfRecord, PrtfAttribute, PrtfIndicator, systemKeywordPlaceholder, findTextKeyword, groupIndicatorsByCondition } from '../prtf-edit.model/prtf-edit.model';
+import { PrtfElement, PrtfField, PrtfConstant, PrtfRecord, PrtfFile, PrtfAttribute, PrtfIndicator, systemKeywordPlaceholder, findTextKeyword, groupIndicatorsByCondition } from '../prtf-edit.model/prtf-edit.model';
 import { simulateRecordFlow } from '../prtf-edit.parser/prtf-edit.parser';
 import { ExtensionState } from '../prtf-edit.states/state';
 import { revealInTree } from '../prtf-edit.providers/prtf-edit.providers';
@@ -79,9 +79,11 @@ function isItemDisplayed(indicators: PrtfIndicator[] | undefined, activeIndicato
 /**
  * Every indicator number referenced anywhere across the given records — each field/constant's own
  * `indicators`, plus every one of its attributes' own (a keyword can be conditioned independently
- * of the item it's on) — sorted, for the "Indicators" toolbar's per-number toggle buttons. Record-
- * level indicators aren't scanned: `PrtfRecord` has no `indicators` field in this model (unlike
- * DSPF), so there's nothing there to collect.
+ * of the item it's on), plus each record's own record-level attributes (e.g. a record-level
+ * SKIPB/SPACEB/SPACEA/SKIPA/HIGHLIGHT conditioned on an indicator, with no field/constant of its
+ * own to hang off of) — sorted, for the "Indicators" toolbar's per-number toggle buttons.
+ * `PrtfRecord` itself has no `indicators` field (unlike DSPF), but its `attributes` entries each
+ * carry their own, same as a field/constant's.
  */
 function collectIndicatorNumbers(elements: PrtfElement[], recordNames: string[]): number[] {
 	const numbers = new Set<number>();
@@ -91,6 +93,9 @@ function collectIndicatorNumbers(elements: PrtfElement[], recordNames: string[])
 	for (const el of elements) {
 		if ((el.kind === 'field' || el.kind === 'constant') && recordNames.includes(el.recordname)) {
 			addAll(el.indicators);
+			for (const attr of el.attributes ?? []) {addAll(attr.indicators);};
+		};
+		if (el.kind === 'record' && recordNames.includes(el.name)) {
 			for (const attr of el.attributes ?? []) {addAll(attr.indicators);};
 		};
 	};
@@ -276,9 +281,10 @@ function getColor(attributes: PrtfAttribute[] | undefined): string | undefined {
 };
 
 /**
- * True when the field/constant carries HIGHLIGHT, or its owning record does — HIGHLIGHT is valid
- * at either level (see "HIGHLIGHT (Highlight) keyword in printer files"), and a record-level one
- * applies to every field in that record.
+ * True when the field/constant carries HIGHLIGHT, or its owning record does — HIGHLIGHT is a
+ * record- or field-level keyword only (per IBM's DDS reference for printer files; not valid at
+ * file level, unlike some other appearance keywords), and a record-level one applies to every
+ * field in that record.
  */
 function hasHighlight(itemAttributes: PrtfAttribute[] | undefined, recordAttributes: PrtfAttribute[] | undefined): boolean {
 	const carries = (attrs: PrtfAttribute[] | undefined) => (attrs ?? []).some(attr => /\bHIGHLIGHT\b/i.test(attr.value));
@@ -472,7 +478,11 @@ function positionRecordEntry(
 	const isAttributeActive = (attr: PrtfAttribute) => isItemDisplayed(attr.indicators, activeIndicators);
 
 	if (recordItems.every(item => item.positionSource !== 'explicit')) {
-		const { rows, endLine } = simulateRecordFlow(record, recordItems, startLine, isAttributeActive);
+		// A file-level SKIPB/SKIPA (the only two spacing keywords valid at that level) applies
+		// before/after *every* record format in the file, per IBM's DDS reference — not a one-time
+		// page-boundary event — so it belongs here, at the same layer as the record's own.
+		const fileAttributes = elements.find((el): el is PrtfFile => el.kind === 'file')?.attributes;
+		const { rows, endLine } = simulateRecordFlow(record, recordItems, startLine, isAttributeActive, fileAttributes);
 		for (const item of recordItems) {
 			const row = rows.get(item.lineIndex);
 			if (row === undefined) {continue;};
@@ -601,7 +611,14 @@ export function collectComposedPageItems(elements: PrtfElement[], sequence: Sequ
  * @param activeIndicators - Currently-simulated-on indicator numbers, applied to the *active*
  *   record only.
  */
-export function collectPageItemsWithOverlay(elements: PrtfElement[], recordName: string, overlayRecordName: string, activeIndicators: Set<number> = new Set()): PageItem[] {
+export function collectPageItemsWithOverlay(
+	elements: PrtfElement[],
+	recordName: string,
+	overlayRecordName: string,
+	activeIndicators: Set<number> = new Set(),
+	repeatOverlay: boolean = false,
+	pageRows: number = DEFAULT_ROWS
+): PageItem[] {
 	const records = elements.filter((el): el is PrtfRecord => el.kind === 'record');
 	const activeRecord = records.find(r => r.name === recordName);
 	if (!activeRecord) {return [];};
@@ -619,8 +636,30 @@ export function collectPageItemsWithOverlay(elements: PrtfElement[], recordName:
 	const firstResult = positionRecordEntry(elements, firstRecord, 0, !activeIsFirst, firstIndicators);
 	const secondResult = positionRecordEntry(elements, secondRecord, firstResult.endLine, activeIsFirst, secondIndicators);
 
-	const overlayItems = activeIsFirst ? secondResult.items : firstResult.items;
 	const activeItems = activeIsFirst ? firstResult.items : secondResult.items;
+
+	let overlayItems: PageItem[];
+	if (repeatOverlay) {
+		// Independent of the active record's own (possibly SKIPB/SPACEB-pushed-way-down) position:
+		// tile read-only copies of the overlay record back-to-back from the top of the page, using
+		// its own natural flow height as the step, all the way to the bottom — a uniform column
+		// reference that's always nearby no matter where the active record ends up, rather than one
+		// occurrence chained relative to it (which was confusing: it effectively started wherever
+		// the active record's own content began/ended, not at a predictable spot).
+		overlayItems = [];
+		let tileStart = 0;
+		let previousStart = -1;
+		while (tileStart < pageRows && tileStart !== previousStart) {
+			previousStart = tileStart;
+			const tile = positionRecordEntry(elements, overlayRecord, tileStart, true, restingIndicators);
+			if (tile.items.length === 0 || tile.endLine <= tileStart) {break;};
+			overlayItems = [...overlayItems, ...tile.items];
+			tileStart = tile.endLine;
+		};
+	} else {
+		overlayItems = activeIsFirst ? secondResult.items : firstResult.items;
+	};
+
 	return [...overlayItems, ...activeItems];
 };
 
@@ -712,6 +751,12 @@ export class RecordPreviewPanel {
 	 * stale overlay target from whatever record was active before doesn't silently keep applying
 	 * to the new one; same reasoning as activeIndicators' own reset. */
 	private overlayRecordName: string | undefined;
+	/** When true, tiles additional read-only copies of the overlay record further down the page
+	 * (stacked using its own natural SPACEB/SKIPB/SPACEA/SKIPA height), so a reference copy stays
+	 * visible even once the active record's own SKIPB/SPACEB has pushed it far down. No effect when
+	 * overlayRecordName is unset. Not reset on record switch — like showRuler, it's a display
+	 * preference, harmless while there's no overlay target to apply it to. */
+	private overlayRepeat = false;
 	/** Tracks the "Focus" toggle purely to relabel the button on the next render — the real state
 	 * lives in VS Code's own maximized-editor-group flag (see toggleFocusMode), which this only
 	 * reflects for toggles made through this button. */
@@ -883,6 +928,10 @@ export class RecordPreviewPanel {
 				this.overlayRecordName = typeof message.recordName === 'string' && message.recordName ? message.recordName : undefined;
 				this.render();
 				break;
+			case 'setOverlayRepeat':
+				this.overlayRepeat = Boolean(message.enabled);
+				this.render();
+				break;
 			case 'setIndicatorsEnabled':
 				this.indicatorsEnabled = Boolean(message.enabled);
 				this.render();
@@ -993,7 +1042,7 @@ export class RecordPreviewPanel {
 		const items = composing
 			? collectComposedPageItems(this.elements, this.sequence, this.overflowLine, liveIndicators)
 			: this.overlayRecordName
-				? collectPageItemsWithOverlay(this.elements, this.recordName, this.overlayRecordName, liveIndicators)
+				? collectPageItemsWithOverlay(this.elements, this.recordName, this.overlayRecordName, liveIndicators, this.overlayRepeat, this.rows)
 				: collectPageItems(this.elements, this.recordName, liveIndicators);
 
 		this.panel.title = composing ? 'Preview: (composed)' : `Preview: ${this.recordName || '(no records)'}`;
@@ -1284,7 +1333,14 @@ export class RecordPreviewPanel {
 		font-weight: bold;
 	}
 	.pf-overlay {
-		opacity: 0.4;
+		/* Distinct on three independent cues (color, dimness, slant), not opacity alone — a plain
+		   (non-bold) active item at full black is otherwise close enough to a dimmed overlay item
+		   to be mistaken for one, while a bold active item's extra weight already stood apart. An
+		   inline COLOR-keyword style on the item itself still overrides the color set here (higher
+		   specificity), but the italic + opacity cues still apply regardless. */
+		color: #999999;
+		opacity: 0.6;
+		font-style: italic;
 		cursor: default;
 		pointer-events: none;
 	}
@@ -1327,6 +1383,9 @@ export class RecordPreviewPanel {
 			</label>
 			<label id="overlayLabel" title="Show another record dimmed behind this one, as a read-only reference — e.g. to check a detail row doesn't collide with the header above it">Overlay
 				<select id="overlaySelect">${overlayOptions}</select>
+				<label title="Keep tiling read-only copies of the overlay further down the page, so a reference copy stays visible even after SKIPB/SPACEB has pushed this record's own content far down">
+					<input type="checkbox" id="overlayRepeatToggle" ${this.overlayRepeat ? 'checked' : ''} ${this.overlayRecordName ? '' : 'disabled'}> 🔁 Repeat
+				</label>
 			</label>
 		</div>
 		<div id="toolbarRow3" class="toolbar-row">
@@ -1362,8 +1421,12 @@ export class RecordPreviewPanel {
 		document.getElementById('rulerBtn').addEventListener('click', () => {
 			vscode.postMessage({ type: 'toggleRuler' });
 		});
+		document.getElementById('overlayRepeatToggle').addEventListener('change', e => {
+			vscode.postMessage({ type: 'setOverlayRepeat', enabled: e.target.checked });
+		});
 		document.getElementById('overlaySelect').addEventListener('change', e => {
 			vscode.postMessage({ type: 'setOverlay', recordName: e.target.value || null });
+			document.getElementById('overlayRepeatToggle').disabled = !e.target.value;
 		});
 		// Only rendered at all once there's at least one indicator to simulate in the current record.
 		document.getElementById('indicatorsToggle')?.addEventListener('change', e => {
