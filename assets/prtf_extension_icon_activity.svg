@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
   <!-- Hexagon outline (placeholder, matches dspf-edit family look) -->
-  <path d="M12 2 L20 6.5 L20 17.5 L12 22 L4 17.5 L4 6.5 Z"
+  <path d="M12 2 L22 6.5 L22 17.5 L12 22 L2 17.5 L2 6.5 Z"
         stroke="currentColor"
         stroke-width="1.5"
         fill="none"/>
