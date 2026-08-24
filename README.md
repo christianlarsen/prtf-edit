@@ -85,6 +85,9 @@ This extension is under active development — some DDS keywords aren't supporte
 See the full changelog [here](./CHANGELOG.md).
 
 ### Latest
+**0.1.2** - 2026-08-24
+- Wider hexagon icon, updated Marketplace badges.
+
 **0.1.1** - 2026-08-23
 - Fixed: broken Marketplace README badges.
 
