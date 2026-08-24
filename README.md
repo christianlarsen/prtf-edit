@@ -1,7 +1,8 @@
 # PRTF-edit
 
+[![Visual Studio Marketplace Version](https://vsmarketplacebadges.dev/version/ChristianLarsen.prtf-edit.svg)](https://marketplace.visualstudio.com/items?itemName=ChristianLarsen.prtf-edit)
+[![Installs](https://vsmarketplacebadges.dev/installs/ChristianLarsen.prtf-edit.svg)](https://marketplace.visualstudio.com/items?itemName=ChristianLarsen.prtf-edit)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE.md)
-[![Marketplace](https://img.shields.io/badge/VS%20Code-Marketplace-blue.svg)](https://marketplace.visualstudio.com/items?itemName=ChristianLarsen.prtf-edit)
 
 **PRTF-edit** brings a live structure view, a drag-and-drop print-layout preview, and guided DDS keyword editing to IBM i **printer files** — right inside VS Code. No more counting columns by hand, no more round-trips through STRRLU on a 5250 session, no more guessing how a `SKIPB`, an indicator condition, or an `EDTCDE` will actually print until you compile.
 

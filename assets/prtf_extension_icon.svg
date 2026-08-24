@@ -10,7 +10,7 @@
   </defs>
 
   <!-- Hexagonal background -->
-  <path d="M256 32 L422 128 L422 384 L256 480 L90 384 L90 128 Z"
+  <path d="M256 32 L480 128 L480 384 L256 480 L32 384 L32 128 Z"
         fill="url(#hexGradient)"
         filter="url(#shadow)"
         stroke="none"/>
