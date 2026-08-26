@@ -12,8 +12,8 @@ import { PrtfNode } from '../prtf-edit.providers/prtf-edit.providers';
 
 /** The four DDS keywords that control vertical flow positioning — see prtf-edit.parser.ts's
  * applySkipSpaceBefore/applySkipSpaceAfter for how they combine during simulation. */
-const SPACING_KEYWORDS = ['SKIPB', 'SPACEB', 'SPACEA', 'SKIPA'] as const;
-type SpacingKeyword = typeof SPACING_KEYWORDS[number];
+export const SPACING_KEYWORDS = ['SKIPB', 'SPACEB', 'SPACEA', 'SKIPA'] as const;
+export type SpacingKeyword = typeof SPACING_KEYWORDS[number];
 
 /** Of the four, only these two are valid at file level (confirmed against IBM's DDS reference —
  * SKIPB/SKIPA there are absolute jumps, so "file-wide default" is well-defined; SPACEB/SPACEA are
@@ -21,7 +21,7 @@ type SpacingKeyword = typeof SPACING_KEYWORDS[number];
  * own "Work with File Keywords" screen agrees, listing SKIPA/SKIPB but not SPACEA/SPACEB). Applies
  * as the default for every record that doesn't set its own SKIPB/SKIPA, the same one-per-level
  * cascade record-level already applies to its own fields. */
-const FILE_SPACING_KEYWORDS = ['SKIPB', 'SKIPA'] as const satisfies readonly SpacingKeyword[];
+export const FILE_SPACING_KEYWORDS = ['SKIPB', 'SKIPA'] as const satisfies readonly SpacingKeyword[];
 
 const KEYWORD_DESCRIPTIONS: Record<SpacingKeyword, string> = {
 	SKIPB: 'Jump to an absolute line before printing this item (never moves backwards)',
@@ -89,8 +89,11 @@ function hasAnySpacingKeyword(attributes: { value: string }[] | undefined): bool
  * relative, and would need the items reordered to match row order first — so those are simply
  * blocked outright until the other items are converted (via SKIPB, or one at a time).
  * @param lineIndex - Zero-based source line of the field/constant to edit
+ * @param presetKeyword - Skips the "which keyword" QuickPick and goes straight to the value
+ * InputBox for this one — used by the preview's own spacing badge, which already names the
+ * keyword being clicked (e.g. "SKIPB(3)") instead of asking again.
  */
-export async function editSpacing(lineIndex: number): Promise<void> {
+export async function editSpacing(lineIndex: number, presetKeyword?: string): Promise<void> {
 	const document = ExtensionState.lastPrtfDocument;
 	if (!document) {return;}
 
@@ -109,7 +112,8 @@ export async function editSpacing(lineIndex: number): Promise<void> {
 		};
 	});
 
-	const picked = await vscode.window.showQuickPick(choices, { placeHolder: 'Which spacing keyword do you want to set or clear?' });
+	const picked = (presetKeyword ? choices.find(c => c.keyword === presetKeyword) : undefined)
+		?? await vscode.window.showQuickPick(choices, { placeHolder: 'Which spacing keyword do you want to set or clear?' });
 	if (!picked) {return;}
 
 	// A blank explicit-mode item converting to SKIPB most often wants "jump to wherever I already

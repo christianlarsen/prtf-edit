@@ -12,7 +12,7 @@ import { revealInTree } from '../prtf-edit.providers/prtf-edit.providers';
 import { moveElement } from '../prtf-edit.commands/prtf-edit.move-element';
 import { addConstantAt } from '../prtf-edit.commands/prtf-edit.add-constant';
 import { addFieldAt } from '../prtf-edit.commands/prtf-edit.add-field';
-import { editSpacing } from '../prtf-edit.commands/prtf-edit.edit-spacing';
+import { editSpacing, editRecordSpacing, editFileSpacing, keywordPattern, SPACING_KEYWORDS, FILE_SPACING_KEYWORDS } from '../prtf-edit.commands/prtf-edit.edit-spacing';
 import { deleteElement } from '../prtf-edit.commands/prtf-edit.delete-element';
 import { editAttributes } from '../prtf-edit.commands/prtf-edit.edit-attributes';
 
@@ -57,6 +57,53 @@ interface PageItem {
 	 * running total across pages. Undefined (treated as page 1) outside composition, where
 	 * pagination doesn't apply. */
 	page?: number;
+	/** This item's own SKIPB/SPACEB/SPACEA/SKIPA keyword(s), if any — rendered as small toggle-style
+	 * buttons (same look as the Indicators row) once the item is selected; `active` reflects whether
+	 * that particular keyword's own indicator condition (if it has one) is currently satisfied under
+	 * live simulation, same as any other conditioned keyword. Clicking one reopens editSpacing preset
+	 * to that keyword instead of asking which one via right-click's QuickPick. */
+	spacing?: { keyword: string; value: number; active: boolean }[];
+	/** At-a-glance corner markers so an item's indicators/spacing/attributes don't stay invisible
+	 * until it's clicked: 'I' when the item itself (or any of its own attribute lines, including a
+	 * conditioned spacing keyword) carries an indicator condition; 'S' when it has any of its own
+	 * SKIPB/SPACEB/SPACEA/SKIPA (mirrors `spacing` above); 'A' when it has any of its own TEXT/
+	 * COLOR/HIGHLIGHT/UNDERLINE/EDTCDE — the keywords the "🎨 Attributes" command edits. Presence
+	 * only, not live indicator state (that distinction is what the spacing row's own on/off already
+	 * shows once selected). */
+	flags?: { indicators: boolean; spacing: boolean; attributes: boolean };
+};
+
+/** Reads whichever of the four spacing keywords are actually set on an item, for the preview's own
+ * spacing row — same keywords editSpacing itself edits. Unlike readKeywordValue, this also reports
+ * whether each one is currently indicator-active (true when the keyword carries no indicator
+ * condition of its own), so the client can render it lit/unlit exactly like the Indicators row. */
+function readSpacingEntries(attributes: PrtfAttribute[] | undefined, keywords: readonly string[], activeIndicators: Set<number>): { keyword: string; value: number; active: boolean }[] {
+	const result: { keyword: string; value: number; active: boolean }[] = [];
+	for (const keyword of keywords) {
+		const attr = (attributes ?? []).find(a => keywordPattern(keyword).test(a.value));
+		const match = attr?.value.match(keywordPattern(keyword));
+		if (!attr || !match) {continue;};
+		result.push({ keyword, value: Number(match[1]), active: isItemDisplayed(attr.indicators, activeIndicators) });
+	};
+	return result;
+};
+
+function itemSpacing(attributes: PrtfAttribute[] | undefined, activeIndicators: Set<number>): { keyword: string; value: number; active: boolean }[] {
+	return readSpacingEntries(attributes, SPACING_KEYWORDS, activeIndicators);
+};
+
+/** See PageItem.flags. `ownIndicators` is the field/constant's own visibility condition (undefined
+ * for a constant, which — unlike a field — can only be conditioned per-keyword, never as a whole). */
+function itemFlags(ownIndicators: PrtfIndicator[] | undefined, attributes: PrtfAttribute[] | undefined, spacing: { keyword: string }[]): { indicators: boolean; spacing: boolean; attributes: boolean } {
+	return {
+		indicators: (ownIndicators?.length ?? 0) > 0 || (attributes ?? []).some(attr => (attr.indicators?.length ?? 0) > 0),
+		spacing: spacing.length > 0,
+		attributes: findTextKeyword(attributes) !== undefined
+			|| getColor(attributes) !== undefined
+			|| hasUnderline(attributes)
+			|| hasHighlight(attributes, undefined)
+			|| parseEdtcde(attributes) !== undefined
+	};
 };
 
 /**
@@ -96,6 +143,12 @@ function collectIndicatorNumbers(elements: PrtfElement[], recordNames: string[])
 			for (const attr of el.attributes ?? []) {addAll(attr.indicators);};
 		};
 		if (el.kind === 'record' && recordNames.includes(el.name)) {
+			for (const attr of el.attributes ?? []) {addAll(attr.indicators);};
+		};
+		// File-level SKIPB/SKIPA applies to every record (see positionRecordEntry) — not scoped to
+		// recordNames the way a record's own attributes are, so a conditioned one always needs its
+		// indicator listed here, regardless of which record is currently being previewed.
+		if (el.kind === 'file') {
 			for (const attr of el.attributes ?? []) {addAll(attr.indicators);};
 		};
 	};
@@ -373,10 +426,12 @@ function buildFieldPageItem(field: PrtfField, rowOverride: number | undefined, f
 		flowPositioned ? '(flow-positioned; drag adjusts SPACEB)' : '',
 		'— right-click to edit SKIPB/SPACEB/SPACEA/SKIPA'
 	].filter(Boolean).join(' ');
+	const spacing = itemSpacing(field.attributes, activeIndicators);
 	return {
 		row, col: field.column, text: fieldPlaceholderText(field, activeAttributes), title, lineIndex: field.lineIndex,
 		underline: hasUnderline(activeAttributes), flowPositioned,
-		bold: hasHighlight(activeAttributes, recordAttributes), color: getColor(activeAttributes)
+		bold: hasHighlight(activeAttributes, recordAttributes), color: getColor(activeAttributes),
+		spacing, flags: itemFlags(field.indicators, field.attributes, spacing)
 	};
 };
 
@@ -390,10 +445,12 @@ function buildConstantPageItem(constant: PrtfConstant, rowOverride: number | und
 		flowPositioned ? '(flow-positioned; drag adjusts SPACEB)' : '',
 		'— right-click to edit SKIPB/SPACEB/SPACEA/SKIPA'
 	].filter(Boolean).join(' ');
+	const spacing = itemSpacing(constant.attributes, activeIndicators);
 	return {
 		row, col: constant.column, text: constantPlaceholderText(constant, activeAttributes), title, lineIndex: constant.lineIndex,
 		underline: hasUnderline(activeAttributes), flowPositioned,
-		bold: hasHighlight(activeAttributes, recordAttributes), color: getColor(activeAttributes)
+		bold: hasHighlight(activeAttributes, recordAttributes), color: getColor(activeAttributes),
+		spacing, flags: itemFlags(undefined, constant.attributes, spacing)
 	};
 };
 
@@ -712,6 +769,15 @@ function renderLineHtml(charLine: string, ownerLine: (number | undefined)[], ite
 			const titleAttr = item.title ? ` title="${escapeHtml(item.title)}"` : '';
 			const flowAttr = item.flowPositioned ? ' data-flow="1"' : '';
 			const lineAttr = item.overlay ? '' : ` data-line="${item.lineIndex}"`;
+			const spacingAttr = (!item.overlay && item.spacing && item.spacing.length > 0)
+				? ` data-spacing="${escapeHtml(JSON.stringify(item.spacing)).replace(/"/g, '&quot;')}"`
+				: '';
+			// Trying just 'S' (spacing) for now — indicators/attributes still computed in
+			// item.flags, ready to add back to this join() if the corner marker earns its keep.
+			const flagsLabel = item.overlay ? '' : [
+				item.flags?.spacing ? 'S' : ''
+			].join('');
+			const flagsAttr = flagsLabel ? ` data-flags="${flagsLabel}"` : '';
 			const styleAttr = item.color ? ` style="color:${item.color}"` : '';
 			const cssClass = [
 				'pf-item',
@@ -719,7 +785,7 @@ function renderLineHtml(charLine: string, ownerLine: (number | undefined)[], ite
 				item.bold ? 'pf-bold' : '',
 				item.overlay ? 'pf-overlay' : ''
 			].filter(Boolean).join(' ');
-			html += `<span class="${cssClass}"${lineAttr}${flowAttr}${titleAttr}${styleAttr}>${segment}</span>`;
+			html += `<span class="${cssClass}"${lineAttr}${flowAttr}${spacingAttr}${flagsAttr}${titleAttr}${styleAttr}>${segment}</span>`;
 		} else {
 			html += segment;
 		};
@@ -985,8 +1051,20 @@ export class RecordPreviewPanel {
 					// currently selected.
 					const spacingLineIndex = typeof message.lineIndex === 'number' ? message.lineIndex : this.highlightLineIndex;
 					if (typeof spacingLineIndex === 'number') {
-						editSpacing(spacingLineIndex);
+						editSpacing(spacingLineIndex, typeof message.keyword === 'string' ? message.keyword : undefined);
 					};
+				};
+				break;
+			case 'editRecordSpacing':
+				if (this.sequence.length === 0) {
+					const record = this.elements.find((el): el is PrtfRecord => el.kind === 'record' && el.name === this.recordName);
+					if (record) {await editRecordSpacing(record);};
+				};
+				break;
+			case 'editFileSpacing':
+				if (this.sequence.length === 0) {
+					const file = this.elements.find((el): el is PrtfFile => el.kind === 'file');
+					if (file) {await editFileSpacing(file);};
 				};
 				break;
 			case 'deleteItem':
@@ -1050,6 +1128,24 @@ export class RecordPreviewPanel {
 	};
 
 	private getHtml(records: PrtfRecord[], items: PageItem[]): string {
+		const composing = this.sequence.length > 0;
+		const liveIndicators = this.indicatorsEnabled ? this.activeIndicators : new Set<number>();
+
+		// Record- and file-level spacing badges (see field/constant's own corner 'S' marker) — shown
+		// only outside composition, where "the current record"/"the file" are still single,
+		// unambiguous things a click can act on (editRecordSpacing/editFileSpacing each take one
+		// specific record/file, not a composed chain of them).
+		const currentRecord = !composing ? records.find(r => r.name === this.recordName) : undefined;
+		const recordSpacingEntries = currentRecord ? readSpacingEntries(currentRecord.attributes, SPACING_KEYWORDS, liveIndicators) : [];
+		const fileElement = !composing ? this.elements.find((el): el is PrtfFile => el.kind === 'file') : undefined;
+		const fileSpacingEntries = fileElement ? readSpacingEntries(fileElement.attributes, FILE_SPACING_KEYWORDS, liveIndicators) : [];
+		const spacingTitle = (label: string, entries: { keyword: string; value: number; active: boolean }[]) =>
+			`${label} spacing: ` + entries.map(e => `${e.keyword}(${e.value})${e.active ? '' : ' — not active'}`).join(', ') + ' — click to change';
+		// Same on/off convention as the selected item's own spacing row: blue while at least one of
+		// this scope's keywords is currently in effect (unconditioned ones always count), white once
+		// every one of them is conditioned off under the live indicator simulation.
+		const anySpacingActive = (entries: { active: boolean }[]) => entries.some(e => e.active);
+
 		// Record names for the "Compose sequence" rows' own selects (built client-side — see
 		// makeSequenceRow) — there's no standalone "which record" selector in the toolbar itself;
 		// the previewed record follows the source cursor / tree selection instead, same as
@@ -1107,11 +1203,14 @@ export class RecordPreviewPanel {
 				.map((line, i) => `<div class="pf-line">${renderLineHtml(line, ownerGrid[i], pageItems)}</div>`)
 				.join('');
 			const label = showPageLabels ? `<div class="pf-page-label">Page ${pageNum}</div>` : '';
+			const recordBadge = (pageNum === (pageNumbers[0] ?? 1) && recordSpacingEntries.length > 0)
+				? `<button type="button" id="recordSpacingBtn" class="spacing-item-btn pf-record-spacing-badge${anySpacingActive(recordSpacingEntries) ? ' active' : ''}" title="${escapeHtml(spacingTitle('Record', recordSpacingEntries))}">S</button>`
+				: '';
 			return `<div class="pf-page-group">${label}<div class="pf-page-grid">` +
 				`<div class="pf-ruler-corner"></div>` +
 				`<div class="pf-ruler-line">${rulerLineHtml}</div>` +
 				`<div class="pf-gutter">${gutterCellsHtml}</div>` +
-				`<div class="page">${rowsHtml}</div>` +
+				`<div class="page">${recordBadge}${rowsHtml}</div>` +
 				`</div></div>`;
 		}).join('');
 
@@ -1261,6 +1360,7 @@ export class RecordPreviewPanel {
 		overflow: auto;
 	}
 	.page {
+		position: relative;
 		display: inline-block;
 		background: #ffffff;
 		color: #000000;
@@ -1324,7 +1424,25 @@ export class RecordPreviewPanel {
 		padding: 0 6px;
 	}
 	.pf-item {
+		position: relative;
 		cursor: pointer;
+	}
+	/* At-a-glance corner marker (see PageItem.flags) — tucked inside the item's own box (not
+	   hanging below it, which would collide with the line underneath given how tightly report
+	   lines are packed) so it never needs its own row. Letters, not a filled badge, so it doesn't
+	   obscure the O/6 placeholder text it sits on top of. */
+	.pf-item[data-flags]::after {
+		content: attr(data-flags);
+		position: absolute;
+		right: 0;
+		bottom: 0;
+		font-family: sans-serif;
+		font-size: 9px;
+		font-weight: bold;
+		line-height: 1;
+		letter-spacing: 0.5px;
+		color: #337aff;
+		pointer-events: none;
 	}
 	.pf-underline {
 		text-decoration: underline;
@@ -1363,12 +1481,44 @@ export class RecordPreviewPanel {
 		z-index: 1000;
 		will-change: transform;
 	}
+	/* Spacing toggle-look buttons — the selected item's own SKIPB/SPACEB/SPACEA/SKIPA (on their own
+	   row right under Indicators), plus the record/file-level badges below, which live outside any
+	   .toolbar-row (one pinned to the page corner, the other still in a toolbar row but styled the
+	   same way regardless) — self-contained rather than relying on .toolbar-row button/button.active,
+	   so the same look works in both places. Lit blue via .active — for the selected item's own row
+	   that means "this keyword's indicator condition is currently satisfied"; for the record/file
+	   badges (always .active when shown at all) it just means "this scope has spacing set". */
+	.spacing-item-btn {
+		padding: 1px 6px;
+		font-family: 'Courier New', monospace;
+		font-size: 12px;
+		background: #ffffff;
+		color: #000000;
+		border: 1px solid #999;
+		border-radius: 2px;
+		cursor: pointer;
+	}
+	.spacing-item-btn.active {
+		background: #337aff;
+		color: #ffffff;
+		border-color: #337aff;
+	}
+	/* The current record's own spacing badge, pinned to its page's top-left corner — same 'S'
+	   language as a field/constant's own corner marker, just at page scale and clickable (a record
+	   isn't one grid cell, so it has no natural in-page spot the way a field/constant does). */
+	.pf-record-spacing-badge {
+		position: absolute;
+		top: -9px;
+		left: -1px;
+		z-index: 10;
+	}
 </style>
 </head>
 <body>
 	<div id="toolbarContainer">
 		<div id="toolbarRow1" class="toolbar-row">
 			<button id="focusModeBtn" title="Hide the source code editor to focus on the preview (tree view stays visible)">${this.focusModeActive ? '🗗 Show code' : '🗖 Focus'}</button>
+			${fileSpacingEntries.length > 0 ? `<button type="button" id="fileSpacingBtn" class="spacing-item-btn${anySpacingActive(fileSpacingEntries) ? ' active' : ''}" title="${escapeHtml(spacingTitle('File', fileSpacingEntries))}">📄 S</button>` : ''}
 		</div>
 		<div id="toolbarRow2" class="toolbar-row">
 			<span id="sizeLabel">Size:</span>
@@ -1405,6 +1555,9 @@ export class RecordPreviewPanel {
 		${this.indicatorsEnabled ? `<div id="toolbarRow5" class="toolbar-row">
 			<span id="indicatorList">${indicatorButtonsHtml}</span>
 		</div>` : ''}
+		<div id="toolbarRowSpacing" class="toolbar-row" style="display:none">
+			<span id="spacingList"></span>
+		</div>
 		<div id="sequenceBar" class="toolbar-row">
 			<span id="sequenceRows"></span>
 			<button id="addSequenceRowBtn" title="Add another record format to the composed sequence">+ Row</button>
@@ -1464,6 +1617,8 @@ export class RecordPreviewPanel {
 		deleteItemBtn.addEventListener('click', () => vscode.postMessage({ type: 'deleteItem' }));
 		attributesBtn.addEventListener('click', () => vscode.postMessage({ type: 'editAttributes' }));
 		spacingBtn.addEventListener('click', () => vscode.postMessage({ type: 'editSpacing' }));
+		document.getElementById('recordSpacingBtn')?.addEventListener('click', () => vscode.postMessage({ type: 'editRecordSpacing' }));
+		document.getElementById('fileSpacingBtn')?.addEventListener('click', () => vscode.postMessage({ type: 'editFileSpacing' }));
 
 		// "Compose sequence": combine several record formats (each with a repeat count) onto one
 		// page instead of previewing a single one — see collectComposedPageItems.
@@ -1732,12 +1887,41 @@ export class RecordPreviewPanel {
 			endDrag(false);
 		});
 
+		const toolbarRowSpacing = document.getElementById('toolbarRowSpacing');
+		const spacingList = document.getElementById('spacingList');
+
+		function renderSpacingRow(lineIndex) {
+			spacingList.innerHTML = '';
+			const el = lineIndex === null || lineIndex === undefined
+				? null
+				: document.querySelector('[data-line="' + lineIndex + '"][data-spacing]');
+			const entries = el ? (() => { try { return JSON.parse(el.dataset.spacing); } catch (e) { return null; }; })() : null;
+			if (!entries || !entries.length) {
+				toolbarRowSpacing.style.display = 'none';
+				return;
+			};
+			entries.forEach(entry => {
+				const btn = document.createElement('button');
+				btn.type = 'button';
+				btn.className = 'spacing-item-btn' + (entry.active ? ' active' : '');
+				btn.textContent = entry.keyword + '(' + entry.value + ')';
+				btn.title = (entry.active ? 'Active' : 'Not active (indicator condition not met)') + ' — click to change ' + entry.keyword;
+				btn.addEventListener('click', () => {
+					vscode.postMessage({ type: 'editSpacing', lineIndex, keyword: entry.keyword });
+				});
+				spacingList.appendChild(btn);
+			});
+			toolbarRowSpacing.style.display = '';
+		};
+
 		function applyHighlight(lineIndex) {
 			document.querySelectorAll('.pf-highlight').forEach(el => el.classList.remove('pf-highlight'));
 			currentHighlightLine = lineIndex;
 			refreshSelectionButtonsState();
-			if (lineIndex === null || lineIndex === undefined) return;
-			document.querySelectorAll('[data-line="' + lineIndex + '"]').forEach(el => el.classList.add('pf-highlight'));
+			if (lineIndex !== null && lineIndex !== undefined) {
+				document.querySelectorAll('[data-line="' + lineIndex + '"]').forEach(el => el.classList.add('pf-highlight'));
+			};
+			renderSpacingRow(lineIndex);
 		};
 		window.addEventListener('message', event => {
 			if (event.data.type === 'highlightLine') applyHighlight(event.data.lineIndex);

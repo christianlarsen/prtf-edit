@@ -29,7 +29,8 @@ PRTF-edit doesn't replace your compiler — it closes the gap between writing DD
 - Right-clicking a field or constant also opens the spacing editor directly, with the option to convert an explicit-Line record to flow positioning in one step.
 - **"Overlay"**: show another record dimmed behind the one you're editing, to check alignment between them — e.g. a header against the detail line printed below it. A **"🔁 Repeat"** toggle tiles the overlay down the whole page, so it stays visible even after a totals record's own `SKIPB` pushes it far down.
 - **"Compose sequence"**: preview several record formats together — each with its own repeat count — the way they'd actually print one after another (a header, several detail rows, a total line), with automatic page breaks once the content passes your configured page length, and optional repeating "standing" headers on every new page.
-- **"Indicators"**: simulate which indicators are on or off, to see exactly which fields, constants, and keywords would print — including how a conditioned `SKIPB`/`SPACEB`/`SPACEA`/`SKIPA` shifts everything printed after it, and indicators used only on a record-level keyword with no field of its own. Only shown when the record you're viewing actually uses indicators.
+- **"Indicators"**: simulate which indicators are on or off, to see exactly which fields, constants, and keywords would print — including how a conditioned `SKIPB`/`SPACEB`/`SPACEA`/`SKIPA` shifts everything printed after it, and indicators used only on a record-, or file-level keyword with no field of its own. Only shown when the record you're viewing actually uses indicators.
+- **Spacing at a glance**: a field or constant with its own `SKIPB`/`SPACEB`/`SPACEA`/`SKIPA` shows a small "S" marker, even before you select it. Select it and its keyword(s) appear as toggle buttons right under Indicators — lit blue when their own indicator condition is currently satisfied — click one to change its value directly. The record and the file get the same treatment: an "S" pinned to the page's corner for the record's own spacing, and a "📄 S" in the toolbar for the file's.
 - **"📏 Ruler"** for row/column numbers alongside the page, **"🗖 Focus"** to hide the source editor and concentrate on the preview.
 
 ### Editing from the tree
@@ -85,14 +86,8 @@ This extension is under active development — some DDS keywords aren't supporte
 See the full changelog [here](./CHANGELOG.md).
 
 ### Latest
-**0.1.2** - 2026-08-24
-- Wider hexagon icon, updated Marketplace badges.
-
-**0.1.1** - 2026-08-23
-- Fixed: broken Marketplace README badges.
-
-**0.1.0** - 2026-08-23
-- First release: Definition tree, page-layout preview with drag & drop, indicators simulation, overlay (with a repeating mode), compose sequence, spacing and attribute editing at file/record/field level, and diagnostics for conflicting positioning styles.
+**0.2.0** - 2026-08-26
+- At-a-glance spacing marker on fields/constants, a spacing toggle row for the selected item, and record-/file-level spacing badges — all reflecting the live indicator simulation. Fixed an indicator used only on a file-level `SKIPB`/`SKIPA` not appearing in the Indicators toggle.
 
 ---
 
