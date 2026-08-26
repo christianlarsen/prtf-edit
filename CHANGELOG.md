@@ -3,6 +3,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.2.0] - 2026-08-26
+
+### Added
+- **At-a-glance spacing marker**: a small blue "S" in the bottom-right corner of any field or constant that carries `SKIPB`/`SPACEB`/`SPACEA`/`SKIPA`, visible without having to select it first.
+- **Spacing row** in the preview toolbar, right under Indicators: once a field or constant is selected, each of its own spacing keywords shows as its own toggle-style button — lit blue when that keyword's indicator condition (if any) is currently satisfied under the live simulation, plain otherwise. Clicking one jumps straight to changing its value, skipping the "which keyword" picker.
+- **Record- and file-level spacing badges**: a blue "S" pinned to the previewed page's top-left corner for the record's own `SKIPB`/`SPACEB`/`SPACEA`/`SKIPA`, and a "📄 S" in the toolbar for the file's own `SKIPB`/`SKIPA` — both reflect the live indicator simulation the same way, and open the same spacing editor on click.
+
+### Fixed
+- An indicator used only to condition a file-level `SKIPB`/`SKIPA` never appeared in the "Indicators" simulation toggle row, so it couldn't be turned on/off to preview its effect.
+
 ## [0.1.2] - 2026-08-24
 
 ### Changed
