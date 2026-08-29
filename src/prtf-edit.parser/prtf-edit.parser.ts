@@ -827,21 +827,38 @@ export interface FlowModeInsertionInfo {
  * explicit Line into an otherwise flow-mode record is a real CRTPRTF conflict (CPD7826/CPD7860),
  * not just a style mismatch. Used by the "+ Field"/"+ Constant" placing mode; the equivalent check
  * for dragging an existing item lives separately (moveElement).
+ *
+ * An empty record (no field/constant yet) can't be classified by its items' `positionSource`, but
+ * a record-level SKIPB/SKIPA/SPACEB/SPACEA already commits it to flow mode — writing the first
+ * item's Line explicitly would conflict with that keyword just as much as it would in a
+ * non-empty record (this is exactly what CRTPRTF's CPD7826/CPD7860 flags).
  * @param elements - The full parsed element list (ExtensionState.lastPrtfElements)
  * @param recordName - The record the new field/constant is being added to
  */
 export function resolveFlowModeInsertion(elements: PrtfElement[], recordName: string): FlowModeInsertionInfo {
     const record = elements.find((el): el is PrtfRecord => el.kind === 'record' && el.name === recordName);
+    if (!record) {return { isFlowMode: false };};
+
     const items = elements
         .filter((el): el is PrtfField | PrtfConstant =>
             (el.kind === 'field' || el.kind === 'constant') && el.recordname === recordName)
         .sort((a, b) => a.lineIndex - b.lineIndex);
 
-    if (!record || items.length === 0 || items.some(item => item.positionSource !== 'flow')) {
+    const fileAttributes = elements.find((el): el is PrtfFile => el.kind === 'file')?.attributes;
+
+    if (items.length === 0) {
+        const recordHasSpaceSkip = ['SKIPB', 'SPACEB', 'SPACEA', 'SKIPA']
+            .some(keyword => extractSkipSpaceValue(record.attributes, keyword) !== undefined);
+        if (!recordHasSpaceSkip) {return { isFlowMode: false };};
+
+        const { endLine } = simulateRecordFlow(record, items, 0, undefined, fileAttributes);
+        return { isFlowMode: true, lastItemRow: endLine || 1 };
+    };
+
+    if (items.some(item => item.positionSource !== 'flow')) {
         return { isFlowMode: false };
     };
 
-    const fileAttributes = elements.find((el): el is PrtfFile => el.kind === 'file')?.attributes;
     const { rows } = simulateRecordFlow(record, items, 0, undefined, fileAttributes);
     const lastItem = items[items.length - 1];
     return { isFlowMode: true, lastItemRow: rows.get(lastItem.lineIndex) ?? 1 };
