@@ -3,6 +3,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.2.1] - 2026-08-29
+
+### Added
+- Releases are now also published to the [Open VSX Registry](https://open-vsx.org/), alongside the VS Code Marketplace — so editors that pull extensions from Open VSX (VSCodium, Windsurf, Cursor, ...) get updates too.
+
+### Fixed
+- Adding the first field or constant to a record that already had a record-level `SKIPB`/`SKIPA`/`SPACEB`/`SPACEA` (and no fields/constants yet) wrote it at an explicit Line/Position instead of following the record's own flow-mode style — a real `CRTPRTF` conflict (`CPD7826`/`CPD7860`). The "+ Field"/"+ Constant" placing mode now recognizes an empty flow-mode record correctly and positions the new item via `SPACEB`, matching the record's existing style.
+
 ## [0.2.0] - 2026-08-26
 
 ### Added

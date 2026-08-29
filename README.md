@@ -86,8 +86,8 @@ This extension is under active development — some DDS keywords aren't supporte
 See the full changelog [here](./CHANGELOG.md).
 
 ### Latest
-**0.2.0** - 2026-08-26
-- At-a-glance spacing marker on fields/constants, a spacing toggle row for the selected item, and record-/file-level spacing badges — all reflecting the live indicator simulation. Fixed an indicator used only on a file-level `SKIPB`/`SKIPA` not appearing in the Indicators toggle.
+**0.2.1** - 2026-08-29
+- Now also published to the [Open VSX Registry](https://open-vsx.org/), alongside the VS Code Marketplace. Fixed adding the first field/constant to an already-flow-mode (but still empty) record writing an explicit Line/Position instead of following its `SKIPB`/`SPACEB`/`SPACEA`/`SKIPA` style.
 
 ---
 
