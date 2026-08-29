@@ -27,7 +27,7 @@ jobs:
       - name: Install Extension Dependencies
         run: |
           npm install
-          npm install -g @vscode/vsce
+          npm install -g @vscode/vsce ovsx
 
       - name: Build Extension
         run: vsce package
@@ -37,5 +37,7 @@ jobs:
         env:
           PUBLISHER_TOKEN: ${{ secrets.PUBLISHER_TOKEN }}
 
-      # Open VSX Registry: not published there yet — add back the ovsx install/publish steps
-      # (see dspf-edit's release.yaml for the exact shape) once that's set up.
+      - name: Publish to Open VSX Registry
+        run: ovsx publish *.vsix -p $OVSX_TOKEN
+        env:
+          OVSX_TOKEN: ${{ secrets.OVSX_TOKEN }}
