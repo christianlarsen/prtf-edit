@@ -47,6 +47,14 @@ export function activate(context: vscode.ExtensionContext) {
 		})
 	);
 
+	// Tracks which nodes are currently expanded (VS Code exposes no way to query this directly) so
+	// that a preview click can select a node in the tree without forcing a collapsed record open —
+	// see revealInTree in prtf-edit.providers.ts.
+	context.subscriptions.push(
+		treeView.onDidExpandElement(event => treeProvider.markExpanded((event.element as PrtfNode).id as string)),
+		treeView.onDidCollapseElement(event => treeProvider.markCollapsed((event.element as PrtfNode).id as string))
+	);
+
 	// Store references in the global state
 	ExtensionState.treeProvider = treeProvider;
 	ExtensionState.treeView = treeView;
