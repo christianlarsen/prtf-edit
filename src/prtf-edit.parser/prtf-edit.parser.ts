@@ -13,8 +13,16 @@ import {
     PrtfFile,
     PrtfAttribute,
     isLiteralConstantValue,
-    constantPrintedWidth
+    constantPrintedWidth,
+    systemKeywordPlaceholder
 } from '../prtf-edit.model/prtf-edit.model';
+
+/** True when a bare (bit blank) keyword-zone text is what actually gives a constant its identity —
+ * a quoted literal, or one of the recognized bare system keywords (DATE/TIME/PAGNBR) — as opposed
+ * to a plain attribute keyword (SPACEB, HIGHLIGHT, UNDERLINE, ...) that merely modifies it. */
+function isConstantIdentityText(text: string): boolean {
+    return isLiteralConstantValue(text) || systemKeywordPlaceholder(text) !== undefined;
+};
 
 /**
  * Tracks the last resolved (row, col, length) of a positioned field/constant within the current
@@ -394,7 +402,7 @@ function parseConstantElement(
     components: any,
     lastRecord: string
 ) {
-    const { fullValue, lastLineIndex } = extractMultiLineConstant(lines, lineIndex, trimmedLine);
+    const { fullValue, lastLineIndex, leadingAttributes } = extractMultiLineConstant(lines, lineIndex, trimmedLine);
     const { attributes, nextIndex } = extractAttributes('C', lines, lastLineIndex, true, components.indicators);
 
     // A constant's keyword-zone text is only a literal value when it's quoted ('text' or
@@ -426,7 +434,7 @@ function parseConstantElement(
         lineIndex: lineIndex,
         lastLineIndex: lastLineIndex,
         recordname: lastRecord,
-        attributes: [...inlineKeywordAttributes, ...(attributes || [])],
+        attributes: [...leadingAttributes, ...inlineKeywordAttributes, ...(attributes || [])],
         indicators: components.indicators,
         indicatorLineIndices: components.indicatorLineIndices
     };
@@ -443,37 +451,66 @@ function parseConstantElement(
  * Also handles a shape that isn't dash-continuation at all: RLU itself regenerates DDS source
  * this way once a file's been round-tripped through it (confirmed against a real RLU/CRTPRTF
  * save) — a constant's own Line/Position can land alone on its line, with nothing else on it, and
- * its actual literal or system keyword only starts on the very next line, with no trailing hyphen
- * anywhere. Without this, that next line reads as an empty value (the constant's own `name` ends
+ * its actual literal or system keyword only starts on a *later* line, with no trailing hyphen
+ * anywhere. Without this, that later line reads as an empty value (the constant's own `name` ends
  * up `''`) and the real text/keyword gets misattributed as if it were one of the constant's own
- * *attributes* instead — invisible in the preview, since nothing renders a bare `name`. Detected
- * by peeking one line ahead: if this line's own keyword zone is blank, and the next line has no
- * field name, Line, or Position of its own (so it structurally can't be anything but a
- * continuation of *something*) and isn't a record line or a comment, treat it as where the
- * constant's value actually starts, then apply the normal dash-continuation logic from there.
+ * *attributes* instead — invisible in the preview, since nothing renders a bare `name`. Detected by
+ * scanning forward through consecutive "bare" lines (no field name, Line, or Position of their
+ * own, so each structurally can't be anything but a continuation of *something*, and isn't a
+ * record line or a comment): the first one that's actually the constant's identity (a quoted
+ * literal, or a recognized bare system keyword — see isConstantIdentityText) is where the value
+ * starts, same as before. Any bare line found *before* that point isn't the identity at all — it's
+ * a keyword (SPACEB, HIGHLIGHT, UNDERLINE, ...) that modifies the constant still to come (a real
+ * shape RLU also produces: Position, then one or more attribute lines, then finally the literal) —
+ * returned separately as `leadingAttributes` so the caller can attach them to the constant instead
+ * of losing them or misreading one as the constant's own name.
  */
 function extractMultiLineConstant(
     lines: string[],
     startIndex: number,
     trimmedLine: string
-): { fullValue: string; lastLineIndex: number } {
+): { fullValue: string; lastLineIndex: number; leadingAttributes: PrtfAttribute[] } {
 
     let valueLine = trimmedLine;
     let valueStartIndex = startIndex;
+    const leadingAttributes: PrtfAttribute[] = [];
 
     if (trimmedLine.substring(39, 75).trim() === '') {
-        const nextLine = lines[startIndex + 1];
-        if (nextLine !== undefined) {
+        let probeIndex = startIndex;
+        const pendingCandidates: { lineIndex: number; text: string; indicators: PrtfIndicator[] }[] = [];
+
+        while (true) {
+            const nextLine = lines[probeIndex + 1];
+            if (nextLine === undefined) {break;}
+
             const nextTrimmed = nextLine.substring(5);
             const isCommentLine = nextTrimmed.charAt(1) === '*';
             const nextComponents = extractLineComponents(nextTrimmed);
+            const nextKeywordText = nextTrimmed.substring(39, 75).trim();
             const isBareContinuation = !isCommentLine && !isRecordLine(nextTrimmed) &&
                 !nextComponents.fieldName && nextComponents.row === undefined && nextComponents.col === undefined &&
-                nextTrimmed.substring(39, 75).trim() !== '';
-            if (isBareContinuation) {
+                nextKeywordText !== '';
+            if (!isBareContinuation) {break;}
+
+            probeIndex++;
+            if (isConstantIdentityText(nextKeywordText)) {
                 valueLine = nextTrimmed;
-                valueStartIndex = startIndex + 1;
+                valueStartIndex = probeIndex;
+                leadingAttributes.push(...pendingCandidates.map(candidate => ({
+                    kind: 'attribute' as const,
+                    lineIndex: candidate.lineIndex,
+                    lastLineIndex: candidate.lineIndex,
+                    value: candidate.text,
+                    indicators: candidate.indicators
+                })));
+                break;
             };
+            // Not the identity yet — hold onto it in case a later line turns out to be one. If the
+            // chain never settles on a real identity line (falls off the end of the bare-line run
+            // without one), pendingCandidates is simply discarded and valueLine/valueStartIndex
+            // stay at their initial (still-blank) value — an unresolvable/malformed shape, safer
+            // left as an empty name than guessing one of these keywords was meant to be it.
+            pendingCandidates.push({ lineIndex: probeIndex, text: nextKeywordText, indicators: nextComponents.indicators });
         };
     };
 
@@ -492,7 +529,7 @@ function extractMultiLineConstant(
         fullValue += nextTrimmed.substring(39, 75);
     };
 
-    return { fullValue: fullValue.trim(), lastLineIndex: continuationIndex };
+    return { fullValue: fullValue.trim(), lastLineIndex: continuationIndex, leadingAttributes };
 };
 
 function parseAttributeElement(

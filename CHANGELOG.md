@@ -3,6 +3,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.2.2] - 2026-08-30
+
+### Fixed
+- Clicking a record's (or field's/constant's) own name directly in the tree forced it open even when you meant to just select it, since a plain click both selects *and* toggles a collapsible row by default. Every navigable tree node now runs its click as a real "go to source" action instead, so selecting it no longer also expands it — the disclosure arrow (or "Expand All") still does. Selecting a field or constant from the preview still opens the tree down to it, same as before.
+- The preview always started at a fixed 66x132 page size, silently clipping anything printed past column 132 on reports written wider than that (e.g. landscape layouts). It now starts from the file's own `PAGESIZE(lines columns)` keyword when declared, or otherwise sizes itself to fit every field and constant actually placed in the file. The toolbar's rows/cols inputs still work the same as before.
+- A constant whose Position lands alone on its own line, with one or more keywords (`SPACEB`, `UNDERLINE`, `HIGHLIGHT`, ...) coded *before* its actual literal or system keyword (`DATE`/`TIME`/`PAGNBR`) — a shape RLU itself produces — had the first of those keywords misread as the constant's own text, showing up as a bogus extra "constant" in both the tree and the preview instead of as one of the real constant's attributes.
+
 ## [0.2.1] - 2026-08-29
 
 ### Added

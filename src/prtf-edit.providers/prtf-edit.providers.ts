@@ -42,6 +42,16 @@ type PrtfNodeSource = PrtfElement | GroupNode;
  * re-renders (derived from the underlying data, not object identity) so VS Code can match up tree
  * items for `TreeView.reveal()`.
  */
+/** Registered in extension.ts to navigate the source editor to the clicked node's line, and bound
+ * as every navigable node's `TreeItem.command` below (same pattern as dspf-edit's own tree —
+ * `ddsEdit.goToLine`). Binding a command here is also what changes VS Code's default single-click
+ * behavior: a collapsible tree item with *no* bound command toggles expand/collapse on a plain
+ * label click, in addition to selecting it. With a command bound, VS Code runs it instead and
+ * leaves the item's expand state alone — so clicking a record (to select it / show its preview)
+ * no longer also forcibly unfolds it. Expanding is still available via the item's own disclosure
+ * arrow, or "Expand All". */
+export const TREE_NODE_CLICK_COMMAND = 'prtf-edit.internal.treeNodeClicked';
+
 export class PrtfNode extends vscode.TreeItem {
 	constructor(
 		id: string,
@@ -56,6 +66,9 @@ export class PrtfNode extends vscode.TreeItem {
 		// target one specific group (the "📂 Records" row's own inline "+" icon) without also
 		// matching every other group (Attributes, Indicators, ...).
 		this.contextValue = source.kind === 'treeGroup' ? `treeGroup:${source.role}` : source.kind;
+		if (collapsibleState !== vscode.TreeItemCollapsibleState.None && source.kind !== 'treeGroup') {
+			this.command = { command: TREE_NODE_CLICK_COMMAND, title: 'Select', arguments: [this] };
+		};
 	};
 };
 
@@ -71,28 +84,6 @@ export class PrtfTreeProvider implements vscode.TreeDataProvider<PrtfNode> {
 
 	private hasActiveDocument = false;
 	private elements: PrtfElement[] = [];
-	/** Ids of nodes the user currently has expanded, tracked via the TreeView's own expand/collapse
-	 * events (see extension.ts) — VS Code exposes no way to query this directly. Used so a
-	 * preview click can select a node in the tree without forcing open a collapsed record just to
-	 * make it visible; see `isNodeVisible`. */
-	private expandedIds = new Set<string>();
-
-	markExpanded(id: string): void {
-		this.expandedIds.add(id);
-	};
-
-	markCollapsed(id: string): void {
-		this.expandedIds.delete(id);
-	};
-
-	/** Whether `node` is currently visible without expanding anything — i.e. every one of its
-	 * ancestors is already expanded. Root-level nodes (no parent) are always visible. */
-	isNodeVisible(node: PrtfNode): boolean {
-		const parent = this.getParent(node);
-		if (!parent) {return true;}
-		if (!this.expandedIds.has(parent.id as string)) {return false;}
-		return this.isNodeVisible(parent);
-	};
 
 	setHasActiveDocument(value: boolean) {
 		this.hasActiveDocument = value;
@@ -399,12 +390,11 @@ function indicatorTooltip(indicators: PrtfIndicator[] | undefined): string | und
 };
 
 /**
- * Selects a field/constant in the "Definition" tree — used to keep the preview's click-to-navigate
- * in sync with the tree, same as it already is with the source editor. Only touches the tree when
- * the target is already visible (its ancestors are already expanded); it deliberately never forces
- * a collapsed record open just because the preview was clicked, since that can unfold a large
- * subtree the user never asked to see. A no-op if the tree/provider aren't available yet, the
- * target can't be found, or it isn't currently visible.
+ * Reveals and selects a field/constant in the "Definition" tree — used to keep the preview's
+ * click-to-navigate in sync with the tree, same as it already is with the source editor (and same
+ * as dspf-edit's own tree). Deliberately does expand whatever collapsed ancestors stand between the
+ * root and the target — selecting a specific element is expected to show where it lives, same as
+ * dspf-edit. A no-op if the tree/provider aren't available yet or the target can't be found.
  */
 export function revealInTree(recordName: string, lineIndex: number): void {
 	const treeProvider = ExtensionState.treeProvider as PrtfTreeProvider | undefined;
@@ -412,9 +402,9 @@ export function revealInTree(recordName: string, lineIndex: number): void {
 	if (!treeProvider || !treeView) {return;}
 
 	const node = treeProvider.buildNodeFor(recordName, lineIndex);
-	if (!node || !treeProvider.isNodeVisible(node)) {return;}
+	if (!node) {return;}
 
-	treeView.reveal(node, { select: true, focus: false, expand: false }).then(undefined, () => {
+	treeView.reveal(node, { select: true, focus: false, expand: true }).then(undefined, () => {
 		// Reveal can reject if the tree hasn't finished (re)rendering yet after a fast series of
 		// clicks — harmless to ignore, the next selection/refresh will settle it.
 	});

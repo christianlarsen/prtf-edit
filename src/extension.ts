@@ -5,7 +5,7 @@
 */
 
 import * as vscode from 'vscode';
-import { PrtfNode, PrtfTreeProvider } from './prtf-edit.providers/prtf-edit.providers';
+import { PrtfNode, PrtfTreeProvider, TREE_NODE_CLICK_COMMAND } from './prtf-edit.providers/prtf-edit.providers';
 import { ExtensionState } from './prtf-edit.states/state';
 import { initializeDocumentListeners } from './prtf-edit.listeners/listeners';
 import { registerPreviewRecordCommand } from './prtf-edit.commands/prtf-edit.preview-record';
@@ -32,27 +32,33 @@ export function activate(context: vscode.ExtensionContext) {
 		treeDataProvider: treeProvider
 	});
 
-	// Clicking a node navigates the source editor to its line, and (if the preview is open) points
-	// the preview at it too — the one and only other place besides a click inside the preview
-	// itself that changes what the preview shows; it deliberately does *not* follow the source
-	// cursor around on its own (see listeners.ts).
+	// If the preview is open, clicking a node points it at the corresponding line too — the one and
+	// only other place besides a click inside the preview itself that changes what the preview
+	// shows; it deliberately does *not* follow the source cursor around on its own (see
+	// listeners.ts). Source-editor navigation itself is handled by TREE_NODE_CLICK_COMMAND below,
+	// not here, so it also runs when clicking a node whose selection doesn't change (e.g.
+	// re-clicking the already-selected one).
 	context.subscriptions.push(
 		treeView.onDidChangeSelection(event => {
 			const node = event.selection[0] as PrtfNode | undefined;
 			const lineIndex = (node?.source as { lineIndex?: number } | undefined)?.lineIndex;
 			if (typeof lineIndex === 'number') {
-				revealLine(lineIndex);
 				RecordPreviewPanel.syncToLine(ExtensionState.lastPrtfElements, lineIndex);
 			};
 		})
 	);
 
-	// Tracks which nodes are currently expanded (VS Code exposes no way to query this directly) so
-	// that a preview click can select a node in the tree without forcing a collapsed record open —
-	// see revealInTree in prtf-edit.providers.ts.
+	// Bound as every navigable node's TreeItem.command (see its own comment): navigates the source
+	// editor to that node's line. Binding a real command here — rather than leaving navigation to
+	// onDidChangeSelection alone — is also what stops VS Code's default single-click expand/collapse
+	// toggle from firing alongside selection, matching dspf-edit's own tree (ddsEdit.goToLine).
 	context.subscriptions.push(
-		treeView.onDidExpandElement(event => treeProvider.markExpanded((event.element as PrtfNode).id as string)),
-		treeView.onDidCollapseElement(event => treeProvider.markCollapsed((event.element as PrtfNode).id as string))
+		vscode.commands.registerCommand(TREE_NODE_CLICK_COMMAND, (node: PrtfNode) => {
+			const lineIndex = (node?.source as { lineIndex?: number } | undefined)?.lineIndex;
+			if (typeof lineIndex === 'number') {
+				revealLine(lineIndex);
+			};
+		})
 	);
 
 	// Store references in the global state

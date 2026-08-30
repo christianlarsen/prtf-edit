@@ -21,6 +21,38 @@ import { editAttributes } from '../prtf-edit.commands/prtf-edit.edit-attributes'
 const DEFAULT_ROWS = 66;
 const DEFAULT_COLS = 132;
 
+/** Matches a file-level PAGESIZE(lines columns) keyword, e.g. "PAGESIZE(66 198)" — possibly
+ * alongside other keywords on the same raw attribute line (DEVICE(*PRINTER) PAGESIZE(66 198)). */
+const PAGESIZE_PATTERN = /PAGESIZE\s*\(\s*(\d+)\s+(\d+)\s*\)/i;
+
+/**
+ * Picks the initial rows/cols for a freshly opened preview: the file's own PAGESIZE keyword when
+ * it declares one (e.g. a wide/landscape layout), otherwise the smallest size that still fits
+ * every field/constant in the file — so a report designed wider or taller than the traditional
+ * 66x132 default doesn't get silently clipped. Only used as a starting point; the toolbar's
+ * rows/cols inputs (setPageSize) can still override it same as always.
+ */
+function computeAutoPageSize(elements: PrtfElement[]): { rows: number; cols: number } {
+	const file = elements.find((el): el is PrtfFile => el.kind === 'file');
+	for (const attr of file?.attributes ?? []) {
+		const match = attr.value.match(PAGESIZE_PATTERN);
+		if (match) {
+			return { rows: clampPageSize(match[1], DEFAULT_ROWS), cols: clampPageSize(match[2], DEFAULT_COLS) };
+		};
+	};
+
+	let rows = DEFAULT_ROWS;
+	let cols = DEFAULT_COLS;
+	for (const record of elements) {
+		if (record.kind !== 'record') {continue;};
+		for (const item of collectPageItems(elements, record.name)) {
+			rows = Math.max(rows, item.row);
+			cols = Math.max(cols, item.col + item.text.length - 1);
+		};
+	};
+	return { rows: clampPageSize(rows, DEFAULT_ROWS), cols: clampPageSize(cols, DEFAULT_COLS) };
+};
+
 interface PageItem {
 	row: number;
 	col: number;
@@ -953,6 +985,11 @@ export class RecordPreviewPanel {
 		this.panel = panel;
 		this.recordName = recordName;
 		this.elements = elements;
+
+		const autoSize = computeAutoPageSize(elements);
+		this.rows = autoSize.rows;
+		this.cols = autoSize.cols;
+		this.overflowLine = autoSize.rows;
 
 		this.panel.webview.onDidReceiveMessage(message => this.onDidReceiveMessage(message), null, this.disposables);
 		this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
