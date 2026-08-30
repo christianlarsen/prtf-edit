@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.2.3] - 2026-08-30
+
+### Fixed
+- Deleting a field, constant, or record that ended up as the very last line(s) of the source (or clearing its last keyword, e.g. a trailing `SPACEB`) left a blank final line behind instead of removing it, since that line has no trailing newline of its own to delete along with it. A field/constant/record added afterward would then land after that stray blank line.
+
 ## [0.2.2] - 2026-08-30
 
 ### Added

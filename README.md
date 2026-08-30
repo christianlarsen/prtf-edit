@@ -85,11 +85,8 @@ This extension is under active development — some DDS keywords aren't supporte
 See the full changelog [here](./CHANGELOG.md).
 
 ### Latest
-**0.2.2** - 2026-08-30
-- New **Fit to Screen** button in the preview toolbar, for records whose content sits far down a tall page — scales the whole page to fit the visible area instead of needing a scroll.
-- Clicking a record's own name in the "Definition" tree no longer forces it open — selecting it just selects it now; the disclosure arrow (or "Expand All") is what expands. Selecting a field or constant from the preview still opens the tree down to it, as before.
-- The preview's page size now starts from the file's own `PAGESIZE` keyword when declared, or auto-fits every field/constant in the file, instead of always starting at a fixed 66x132 that could clip wider (e.g. landscape) reports.
-- Fixed a constant whose Position lands alone on its own line, with keywords like `SPACEB`/`UNDERLINE`/`HIGHLIGHT` coded before its literal text (a shape RLU itself produces) — the first keyword no longer shows up as a bogus extra constant in the tree and preview.
+**0.2.3** - 2026-08-30
+- Fixed deleting a field/constant/record (or clearing its last spacing keyword) when it was the very last thing in the source — it left a stray blank final line behind, which the next field/constant/record added would land after.
 
 ---
 

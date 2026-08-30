@@ -8,6 +8,7 @@ import * as vscode from 'vscode';
 import { ExtensionState } from '../prtf-edit.states/state';
 import { resolveFlowModeMove } from '../prtf-edit.parser/prtf-edit.parser';
 import { PrtfAttribute } from '../prtf-edit.model/prtf-edit.model';
+import { deletableLineRange } from '../prtf-edit.utils/prtf-edit.edit-helpers';
 
 /**
  * Rewrites a source line's Line/Position zone (columns 39-41, 42-44 — 0-based 38-40/41-43) with
@@ -107,7 +108,7 @@ async function applyFlowMove(
 		const spaceBLine = document.lineAt(existingAttr.lineIndex);
 		const updatedSpaceBText = applySpaceBToLine(spaceBLine.text, newSpaceB);
 		if (newSpaceB === 0 && isEmptyKeywordOnlyLine(updatedSpaceBText)) {
-			edit.delete(document.uri, spaceBLine.rangeIncludingLineBreak);
+			edit.delete(document.uri, deletableLineRange(document, existingAttr.lineIndex, existingAttr.lineIndex));
 		} else {
 			edit.replace(document.uri, spaceBLine.range, updatedSpaceBText);
 		};

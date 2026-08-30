@@ -10,6 +10,7 @@ import { findBlockEndLineIndex } from './prtf-edit.move-element';
 import { readKeywordValue } from './prtf-edit.edit-spacing';
 import { simulateRecordFlow } from '../prtf-edit.parser/prtf-edit.parser';
 import { PrtfNode } from '../prtf-edit.providers/prtf-edit.providers';
+import { deletableLineRange } from '../prtf-edit.utils/prtf-edit.edit-helpers';
 
 type DeletableItem = {
 	lineIndex: number; lastLineIndex?: number; recordname: string; positionSource?: string;
@@ -103,9 +104,7 @@ export async function deleteElement(lineIndex: number): Promise<void> {
 	};
 
 	const blockEndLineIndex = findBlockEndLineIndex(elements, lineIndex, document.lineCount);
-	const startLine = document.lineAt(lineIndex);
-	const endLine = document.lineAt(blockEndLineIndex);
-	edit.delete(document.uri, new vscode.Range(startLine.range.start, endLine.rangeIncludingLineBreak.end));
+	edit.delete(document.uri, deletableLineRange(document, lineIndex, blockEndLineIndex));
 
 	const applied = await vscode.workspace.applyEdit(edit);
 	if (!applied) {

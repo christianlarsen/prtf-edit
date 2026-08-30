@@ -10,6 +10,7 @@ import { isEmptyKeywordOnlyLine, recordAttrsAnchorLineIndex } from './prtf-edit.
 import { findTextKeyword, PrtfAttribute, PrtfRecord } from '../prtf-edit.model/prtf-edit.model';
 import { COLOR_NAMES, EDIT_CODES, parseEdtcde } from '../prtf-edit.webview/prtf-edit.record-preview-panel';
 import { PrtfNode } from '../prtf-edit.providers/prtf-edit.providers';
+import { deletableLineRange } from '../prtf-edit.utils/prtf-edit.edit-helpers';
 
 /** Positions 45-80 (36 chars) hold the keyword zone on any one line — same limit add-constant.ts
  * uses for a constant's own literal. TEXT() is documentation-only with no runtime effect, so it
@@ -146,7 +147,7 @@ export function applyOrInsertKeyword(
 		const keywordLine = document.lineAt(existingAttr.lineIndex);
 		const updatedText = keywordLine.text.replace(pattern, replacement);
 		if (newRawKeywordText === undefined && isEmptyKeywordOnlyLine(updatedText)) {
-			edit.delete(document.uri, keywordLine.rangeIncludingLineBreak);
+			edit.delete(document.uri, deletableLineRange(document, existingAttr.lineIndex, existingAttr.lineIndex));
 		} else {
 			edit.replace(document.uri, keywordLine.range, updatedText);
 		};
