@@ -21,6 +21,38 @@ import { editAttributes } from '../prtf-edit.commands/prtf-edit.edit-attributes'
 const DEFAULT_ROWS = 66;
 const DEFAULT_COLS = 132;
 
+/** Matches a file-level PAGESIZE(lines columns) keyword, e.g. "PAGESIZE(66 198)" — possibly
+ * alongside other keywords on the same raw attribute line (DEVICE(*PRINTER) PAGESIZE(66 198)). */
+const PAGESIZE_PATTERN = /PAGESIZE\s*\(\s*(\d+)\s+(\d+)\s*\)/i;
+
+/**
+ * Picks the initial rows/cols for a freshly opened preview: the file's own PAGESIZE keyword when
+ * it declares one (e.g. a wide/landscape layout), otherwise the smallest size that still fits
+ * every field/constant in the file — so a report designed wider or taller than the traditional
+ * 66x132 default doesn't get silently clipped. Only used as a starting point; the toolbar's
+ * rows/cols inputs (setPageSize) can still override it same as always.
+ */
+function computeAutoPageSize(elements: PrtfElement[]): { rows: number; cols: number } {
+	const file = elements.find((el): el is PrtfFile => el.kind === 'file');
+	for (const attr of file?.attributes ?? []) {
+		const match = attr.value.match(PAGESIZE_PATTERN);
+		if (match) {
+			return { rows: clampPageSize(match[1], DEFAULT_ROWS), cols: clampPageSize(match[2], DEFAULT_COLS) };
+		};
+	};
+
+	let rows = DEFAULT_ROWS;
+	let cols = DEFAULT_COLS;
+	for (const record of elements) {
+		if (record.kind !== 'record') {continue;};
+		for (const item of collectPageItems(elements, record.name)) {
+			rows = Math.max(rows, item.row);
+			cols = Math.max(cols, item.col + item.text.length - 1);
+		};
+	};
+	return { rows: clampPageSize(rows, DEFAULT_ROWS), cols: clampPageSize(cols, DEFAULT_COLS) };
+};
+
 interface PageItem {
 	row: number;
 	col: number;
@@ -830,6 +862,12 @@ export class RecordPreviewPanel {
 	/** Tracked so a later full re-render (e.g. from a source edit) doesn't silently turn the ruler
 	 * back off — toggling it doesn't otherwise need a re-render at all, since it's pure CSS. */
 	private showRuler = false;
+	/** "Fit to Screen" toggle — scales the whole page down (or up) to fit within the webview's own
+	 * visible area, so a record whose content sits far down the page (beyond what fits on screen at
+	 * 100%) doesn't require scrolling to see. Tracked (like showRuler) purely so a later full
+	 * re-render doesn't silently turn it back off; the actual scaling is computed client-side,
+	 * since it depends on live viewport/content pixel sizes. */
+	private fitToScreen = false;
 	/** "Indicators" toggle — a panel-wide preference like showRuler, persisting across switching
 	 * which record is previewed. */
 	private indicatorsEnabled = false;
@@ -954,6 +992,11 @@ export class RecordPreviewPanel {
 		this.recordName = recordName;
 		this.elements = elements;
 
+		const autoSize = computeAutoPageSize(elements);
+		this.rows = autoSize.rows;
+		this.cols = autoSize.cols;
+		this.overflowLine = autoSize.rows;
+
 		this.panel.webview.onDidReceiveMessage(message => this.onDidReceiveMessage(message), null, this.disposables);
 		this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
 
@@ -968,6 +1011,10 @@ export class RecordPreviewPanel {
 			case 'toggleRuler':
 				this.showRuler = !this.showRuler;
 				this.panel.webview.postMessage({ type: 'rulerChanged', active: this.showRuler });
+				break;
+			case 'toggleFitToScreen':
+				this.fitToScreen = !this.fitToScreen;
+				this.panel.webview.postMessage({ type: 'fitToScreenChanged', active: this.fitToScreen });
 				break;
 			case 'setPageSize':
 				this.rows = clampPageSize(message.rows, DEFAULT_ROWS);
@@ -1518,6 +1565,7 @@ export class RecordPreviewPanel {
 	<div id="toolbarContainer">
 		<div id="toolbarRow1" class="toolbar-row">
 			<button id="focusModeBtn" title="Hide the source code editor to focus on the preview (tree view stays visible)">${this.focusModeActive ? '🗗 Show code' : '🗖 Focus'}</button>
+			<button id="fitScreenBtn" class="${this.fitToScreen ? 'active' : ''}" title="Scale the whole page to fit the visible area, so nothing is hidden below the fold">🔍 Fit to Screen</button>
 			${fileSpacingEntries.length > 0 ? `<button type="button" id="fileSpacingBtn" class="spacing-item-btn${anySpacingActive(fileSpacingEntries) ? ' active' : ''}" title="${escapeHtml(spacingTitle('File', fileSpacingEntries))}">📄 S</button>` : ''}
 		</div>
 		<div id="toolbarRow2" class="toolbar-row">
@@ -1564,7 +1612,9 @@ export class RecordPreviewPanel {
 		</div>
 	</div>
 	<div class="page-wrapper">
-		<div id="page" class="${this.showRuler ? 'pf-ruler-on' : ''}">${pagesHtml}</div>
+		<div id="pageScaleBox">
+			<div id="page" class="${this.showRuler ? 'pf-ruler-on' : ''}">${pagesHtml}</div>
+		</div>
 	</div>
 	<script>
 		const vscode = acquireVsCodeApi();
@@ -1573,6 +1623,9 @@ export class RecordPreviewPanel {
 		});
 		document.getElementById('rulerBtn').addEventListener('click', () => {
 			vscode.postMessage({ type: 'toggleRuler' });
+		});
+		document.getElementById('fitScreenBtn').addEventListener('click', () => {
+			vscode.postMessage({ type: 'toggleFitToScreen' });
 		});
 		document.getElementById('overlayRepeatToggle').addEventListener('change', e => {
 			vscode.postMessage({ type: 'setOverlayRepeat', enabled: e.target.checked });
@@ -1914,6 +1967,39 @@ export class RecordPreviewPanel {
 			toolbarRowSpacing.style.display = '';
 		};
 
+		let fitToScreenActive = ${JSON.stringify(this.fitToScreen)};
+		const pageScaleBox = document.getElementById('pageScaleBox');
+
+		// Scales #page (a fixed-size monospace grid — PAGE_ROWS/PAGE_COLS only change via the
+		// rows/cols inputs, which reload the whole page anyway) down or up so it fits entirely
+		// within the webview's own visible area, both width and height. pageScaleBox's own size is
+		// set to the *scaled* dimensions (CSS transform alone doesn't shrink an element's layout
+		// box) so .page-wrapper doesn't reserve the original, unscaled space around it. Click/drag
+		// math elsewhere (measure()) re-reads live getBoundingClientRect() at interaction time, so
+		// it stays correct at any scale without needing its own adjustment.
+		function applyFitToScreen() {
+			if (!fitToScreenActive) {
+				page.style.transform = '';
+				pageScaleBox.style.width = '';
+				pageScaleBox.style.height = '';
+				return;
+			};
+			const naturalWidth = page.offsetWidth;
+			const naturalHeight = page.offsetHeight;
+			if (!naturalWidth || !naturalHeight) {return;};
+			const toolbarHeight = document.getElementById('toolbarContainer').getBoundingClientRect().height;
+			const wrapperPadding = 32; // .page-wrapper's own 16px padding, both sides
+			const availWidth = window.innerWidth - wrapperPadding;
+			const availHeight = window.innerHeight - toolbarHeight - wrapperPadding;
+			const scale = Math.max(0.1, Math.min(availWidth / naturalWidth, availHeight / naturalHeight));
+			page.style.transformOrigin = 'top left';
+			page.style.transform = 'scale(' + scale + ')';
+			pageScaleBox.style.width = (naturalWidth * scale) + 'px';
+			pageScaleBox.style.height = (naturalHeight * scale) + 'px';
+		};
+		window.addEventListener('resize', () => { if (fitToScreenActive) applyFitToScreen(); });
+		applyFitToScreen();
+
 		function applyHighlight(lineIndex) {
 			document.querySelectorAll('.pf-highlight').forEach(el => el.classList.remove('pf-highlight'));
 			currentHighlightLine = lineIndex;
@@ -1933,6 +2019,11 @@ export class RecordPreviewPanel {
 			if (event.data.type === 'rulerChanged') {
 				document.getElementById('page').classList.toggle('pf-ruler-on', event.data.active);
 				document.getElementById('rulerBtn').classList.toggle('active', event.data.active);
+			};
+			if (event.data.type === 'fitToScreenChanged') {
+				fitToScreenActive = event.data.active;
+				document.getElementById('fitScreenBtn').classList.toggle('active', fitToScreenActive);
+				applyFitToScreen();
 			};
 		});
 		applyHighlight(${JSON.stringify(this.highlightLineIndex ?? null)});
