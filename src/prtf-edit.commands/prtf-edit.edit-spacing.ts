@@ -9,6 +9,7 @@ import { ExtensionState } from '../prtf-edit.states/state';
 import { isEmptyKeywordOnlyLine, recordAttrsAnchorLineIndex } from './prtf-edit.move-element';
 import { PrtfFile, PrtfRecord } from '../prtf-edit.model/prtf-edit.model';
 import { PrtfNode } from '../prtf-edit.providers/prtf-edit.providers';
+import { deletableLineRange } from '../prtf-edit.utils/prtf-edit.edit-helpers';
 
 /** The four DDS keywords that control vertical flow positioning — see prtf-edit.parser.ts's
  * applySkipSpaceBefore/applySkipSpaceAfter for how they combine during simulation. */
@@ -207,7 +208,7 @@ export async function editSpacing(lineIndex: number, presetKeyword?: string): Pr
 			const keywordLine = document.lineAt(existingAttr.lineIndex);
 			const updatedKeywordText = applyKeywordToLine(keywordLine.text, picked.keyword, newValue);
 			if (newValue === undefined && isEmptyKeywordOnlyLine(updatedKeywordText)) {
-				edit.delete(document.uri, keywordLine.rangeIncludingLineBreak);
+				edit.delete(document.uri, deletableLineRange(document, existingAttr.lineIndex, existingAttr.lineIndex));
 			} else {
 				edit.replace(document.uri, keywordLine.range, updatedKeywordText);
 			};
@@ -294,7 +295,7 @@ export async function editRecordSpacing(record: PrtfRecord): Promise<void> {
 		const keywordLine = document.lineAt(existingAttr.lineIndex);
 		const updatedText = applyKeywordToLine(keywordLine.text, picked.keyword, newValue);
 		if (newValue === undefined && isEmptyKeywordOnlyLine(updatedText)) {
-			edit.delete(document.uri, keywordLine.rangeIncludingLineBreak);
+			edit.delete(document.uri, deletableLineRange(document, existingAttr.lineIndex, existingAttr.lineIndex));
 		} else {
 			edit.replace(document.uri, keywordLine.range, updatedText);
 		};
@@ -367,7 +368,7 @@ export async function editFileSpacing(file: PrtfFile): Promise<void> {
 		const keywordLine = document.lineAt(existingAttr.lineIndex);
 		const updatedText = applyKeywordToLine(keywordLine.text, picked.keyword, newValue);
 		if (newValue === undefined && isEmptyKeywordOnlyLine(updatedText)) {
-			edit.delete(document.uri, keywordLine.rangeIncludingLineBreak);
+			edit.delete(document.uri, deletableLineRange(document, existingAttr.lineIndex, existingAttr.lineIndex));
 		} else {
 			edit.replace(document.uri, keywordLine.range, updatedText);
 		};

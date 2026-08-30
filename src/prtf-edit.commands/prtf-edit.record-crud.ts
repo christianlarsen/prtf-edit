@@ -9,6 +9,7 @@ import { ExtensionState } from '../prtf-edit.states/state';
 import { PrtfRecord } from '../prtf-edit.model/prtf-edit.model';
 import { PrtfNode } from '../prtf-edit.providers/prtf-edit.providers';
 import { NAME_PATTERN, renameNameZone } from './prtf-edit.add-field';
+import { deletableLineRange } from '../prtf-edit.utils/prtf-edit.edit-helpers';
 
 /** A bare record-format line: form type 'A' (col 6), blank indicators (cols 7-16), name type 'R'
  * (col 17), blank reserved (col 18), name (cols 19-28) — see "Confirmed column layout" in the
@@ -90,11 +91,9 @@ export async function deleteRecordFromNode(node: PrtfNode): Promise<void> {
 	if (choice !== 'Delete') {return;} // Cancelled.
 
 	const endIndex = record.endIndex ?? record.lineIndex;
-	const startLine = document.lineAt(record.lineIndex);
-	const endLine = document.lineAt(endIndex);
 
 	const edit = new vscode.WorkspaceEdit();
-	edit.delete(document.uri, new vscode.Range(startLine.range.start, endLine.rangeIncludingLineBreak.end));
+	edit.delete(document.uri, deletableLineRange(document, record.lineIndex, endIndex));
 
 	const applied = await vscode.workspace.applyEdit(edit);
 	if (!applied) {
