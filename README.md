@@ -31,7 +31,7 @@ PRTF-edit doesn't replace your compiler — it closes the gap between writing DD
 - **"Compose sequence"**: preview several record formats together — each with its own repeat count — the way they'd actually print one after another (a header, several detail rows, a total line), with automatic page breaks once the content passes your configured page length, and optional repeating "standing" headers on every new page.
 - **"Indicators"**: simulate which indicators are on or off, to see exactly which fields, constants, and keywords would print — including how a conditioned `SKIPB`/`SPACEB`/`SPACEA`/`SKIPA` shifts everything printed after it, and indicators used only on a record-, or file-level keyword with no field of its own. Only shown when the record you're viewing actually uses indicators.
 - **Spacing at a glance**: a field or constant with its own `SKIPB`/`SPACEB`/`SPACEA`/`SKIPA` shows a small "S" marker, even before you select it. Select it and its keyword(s) appear as toggle buttons right under Indicators — lit blue when their own indicator condition is currently satisfied — click one to change its value directly. The record and the file get the same treatment: an "S" pinned to the page's corner for the record's own spacing, and a "📄 S" in the toolbar for the file's.
-- **"📏 Ruler"** for row/column numbers alongside the page, **"🗖 Focus"** to hide the source editor and concentrate on the preview.
+- **"📏 Ruler"** for row/column numbers alongside the page, **"🗖 Focus"** to hide the source editor and concentrate on the preview, **"🔍 Fit to Screen"** to scale the whole page down (or up) so content placed far down a tall page is visible without scrolling.
 
 ### Editing from the tree
 Right-click any record, field, or constant in the Definition tree:
@@ -86,6 +86,7 @@ See the full changelog [here](./CHANGELOG.md).
 
 ### Latest
 **0.2.2** - 2026-08-30
+- New **Fit to Screen** button in the preview toolbar, for records whose content sits far down a tall page — scales the whole page to fit the visible area instead of needing a scroll.
 - Clicking a record's own name in the "Definition" tree no longer forces it open — selecting it just selects it now; the disclosure arrow (or "Expand All") is what expands. Selecting a field or constant from the preview still opens the tree down to it, as before.
 - The preview's page size now starts from the file's own `PAGESIZE` keyword when declared, or auto-fits every field/constant in the file, instead of always starting at a fixed 66x132 that could clip wider (e.g. landscape) reports.
 - Fixed a constant whose Position lands alone on its own line, with keywords like `SPACEB`/`UNDERLINE`/`HIGHLIGHT` coded before its literal text (a shape RLU itself produces) — the first keyword no longer shows up as a bogus extra constant in the tree and preview.

@@ -5,6 +5,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [0.2.2] - 2026-08-30
 
+### Added
+- **Fit to Screen** button in the preview toolbar: scales the whole page to fit the visible area, so content placed far down a tall page (e.g. row 60 of 66) is visible right away instead of requiring a scroll.
+
 ### Fixed
 - Clicking a record's (or field's/constant's) own name directly in the tree forced it open even when you meant to just select it, since a plain click both selects *and* toggles a collapsible row by default. Every navigable tree node now runs its click as a real "go to source" action instead, so selecting it no longer also expands it — the disclosure arrow (or "Expand All") still does. Selecting a field or constant from the preview still opens the tree down to it, same as before.
 - The preview always started at a fixed 66x132 page size, silently clipping anything printed past column 132 on reports written wider than that (e.g. landscape layouts). It now starts from the file's own `PAGESIZE(lines columns)` keyword when declared, or otherwise sizes itself to fit every field and constant actually placed in the file. The toolbar's rows/cols inputs still work the same as before.
