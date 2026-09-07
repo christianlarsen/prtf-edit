@@ -1426,16 +1426,25 @@ export class RecordPreviewPanel {
 				.map((line, i) => `<div class="pf-line">${renderLineHtml(line, ownerGrid[i], stackGrid[i], pageItems)}</div>`)
 				.join('');
 			const label = showPageLabels ? `<div class="pf-page-label">Page ${pageNum}</div>` : '';
-			const recordBadge = (pageNum === (pageNumbers[0] ?? 1) && recordSpacingEntries.length > 0)
-				? `<button type="button" id="recordSpacingBtn" class="spacing-item-btn pf-record-spacing-badge${anySpacingActive(recordSpacingEntries) ? ' active' : ''}" title="${escapeHtml(spacingTitle('Record', recordSpacingEntries))}">S</button>`
-				: '';
 			return `<div class="pf-page-group">${label}<div class="pf-page-grid">` +
 				`<div class="pf-ruler-corner"></div>` +
 				`<div class="pf-ruler-line">${rulerLineHtml}</div>` +
 				`<div class="pf-gutter">${gutterCellsHtml}</div>` +
-				`<div class="page">${recordBadge}${rowsHtml}</div>` +
+				`<div class="page">${rowsHtml}</div>` +
 				`</div></div>`;
 		}).join('');
+
+		// The current record's own spacing badge — a sibling of #pageScaleBox (not nested inside
+		// it, or its own "Fit to Screen" CSS transform would distort/break position: sticky below)
+		// in .page-wrapper's own flex row, so it keeps its natural place to the left of the sheet
+		// while staying pinned near the top of the visible area as the page scrolls underneath it
+		// — rather than the page's own top-left corner scrolling away with the rest of the content
+		// (see .pf-record-spacing-badge). Once per record, not per page, since a composed sequence
+		// (where recordSpacingEntries is always empty — see its own computation above) is the only
+		// case with more than one.
+		const recordBadgeHtml = recordSpacingEntries.length > 0
+			? `<button type="button" id="recordSpacingBtn" class="spacing-item-btn pf-record-spacing-badge${anySpacingActive(recordSpacingEntries) ? ' active' : ''}" title="${escapeHtml(spacingTitle('Record', recordSpacingEntries))}">S</button>`
+			: '';
 
 		return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -1445,19 +1454,31 @@ export class RecordPreviewPanel {
 	* {
 		box-sizing: border-box;
 	}
+	html, body {
+		height: 100%;
+	}
+	/* A column: the toolbar's own natural height on top, .page-wrapper taking the rest — rather
+	   than the old "body scrolls as a whole, toolbar stickies to the top of it" model, where the
+	   record-level spacing badge (pinned to the *page's* own top-left corner) scrolled away with
+	   the rest of the page and ended up sliding behind/over the toolbar. Now only .page-wrapper
+	   itself scrolls, so a sticky element inside it (see .pf-record-spacing-badge) can stay pinned
+	   near the top of the visible page without ever reaching the toolbar in the first place. */
 	body {
+		display: flex;
+		flex-direction: column;
 		font-family: sans-serif;
 		background: #ffffff;
 		color: #000000;
 		padding: 0;
 		margin: 0;
 	}
-	/* One sticky band (like dspf-edit's own toolbar) containing several stacked rows — grouped by
-	   purpose the same way: an info/Focus row, a "what am I looking at" selectors row, an actions
-	   row, and (only while composing) the sequence editor row. */
+	/* Like dspf-edit's own toolbar: several stacked rows, grouped by purpose — an info/Focus row, a
+	   "what am I looking at" selectors row, an actions row, and (only while composing) the
+	   sequence editor row. Always visible without needing position: sticky — it's a fixed-height
+	   flex item above .page-wrapper (the only thing that actually scrolls), not part of the
+	   scrolling content itself. */
 	#toolbarContainer {
-		position: sticky;
-		top: 0;
+		flex-shrink: 0;
 		background: #f3f3f3;
 		border-bottom: 1px solid #ccc;
 		padding: 8px 12px;
@@ -1594,9 +1615,31 @@ export class RecordPreviewPanel {
 		gap: 2px;
 		white-space: nowrap;
 	}
+	/* The only element that actually scrolls (see the body/#toolbarContainer comments above) — a
+	   plain block, deliberately *not* the flex row itself (see .pf-page-flex-row): its own height
+	   is bounded to whatever fits the viewport (that's what makes it scroll at all), and a flex
+	   container's align-items: stretch sizes children to *that* bounded box, not to an overflowing
+	   child's full content height — sizing the badge's own gutter that way left it only as tall as
+	   one screenful, so it lost its sticky footing and started scrolling away past that point. The
+	   flex row lives one level deeper, in a child with a natural (unbounded) height instead. */
 	.page-wrapper {
+		flex: 1;
+		min-height: 0;
 		padding: 16px;
 		overflow: auto;
+	}
+	/* The record-level spacing badge's gutter sits beside the page, in a row exactly as tall as the
+	   page itself (see .page-wrapper's own comment on why this can't be .page-wrapper directly). */
+	.pf-page-flex-row {
+		display: flex;
+	}
+	/* Just wide enough for the "S" badge — stretches to the same height as its tall sibling
+	   (#pageScaleBox, by default flex align-items: stretch) purely so the badge's own sticky
+	   positioning below has that whole height to stay pinned within as the page scrolls. */
+	.pf-record-spacing-gutter {
+		flex-shrink: 0;
+		width: 24px;
+		margin-right: 8px;
 	}
 	.page {
 		position: relative;
@@ -1759,13 +1802,16 @@ export class RecordPreviewPanel {
 		color: #ffffff;
 		border-color: #337aff;
 	}
-	/* The current record's own spacing badge, pinned to its page's top-left corner — same 'S'
-	   language as a field/constant's own corner marker, just at page scale and clickable (a record
-	   isn't one grid cell, so it has no natural in-page spot the way a field/constant does). */
+	/* The current record's own spacing badge — same 'S' language as a field/constant's own corner
+	   marker, just at page scale and clickable (a record isn't one grid cell, so it has no natural
+	   in-page spot the way a field/constant does). Sticky, not the page's own top-left corner:
+	   pinned near the top of .page-wrapper's visible scroll area (its own gutter is tall enough —
+	   see .pf-record-spacing-gutter — to give it room to travel) rather than the page's own row 1,
+	   which would otherwise scroll out of view — and behind the toolbar — the moment you scroll
+	   down to a field further down a tall page. */
 	.pf-record-spacing-badge {
-		position: absolute;
-		top: -9px;
-		left: -1px;
+		position: sticky;
+		top: 8px;
 		z-index: 10;
 	}
 </style>
@@ -1825,8 +1871,11 @@ export class RecordPreviewPanel {
 		</div>
 	</div>
 	<div class="page-wrapper">
-		<div id="pageScaleBox">
-			<div id="page" class="${this.showRuler ? 'pf-ruler-on' : ''}">${pagesHtml}</div>
+		<div class="pf-page-flex-row">
+			${recordBadgeHtml ? `<div class="pf-record-spacing-gutter">${recordBadgeHtml}</div>` : ''}
+			<div id="pageScaleBox">
+				<div id="page" class="${this.showRuler ? 'pf-ruler-on' : ''}">${pagesHtml}</div>
+			</div>
 		</div>
 	</div>
 	<script>
