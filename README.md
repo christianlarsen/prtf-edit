@@ -97,6 +97,7 @@ See the full changelog [here](./CHANGELOG.md).
 - Added a dashed-outline hover cue and click-to-cycle for fields/constants sharing the exact same position, so none of them are silently unreachable behind whichever one renders on top.
 - Fixed a spurious `SPACEB` change when dragging a field/constant horizontally only, while an "Overlay" declared earlier in the source was active.
 - Fixed the record-level spacing "S" badge scrolling away (and behind the toolbar) on a tall page instead of staying visible.
+- Fixed the "🗖 Focus"/"🗗 Show code" button losing its blue "active" highlight (label stayed correct) on a full re-render while focus mode was on, e.g. after switching to a different record.
 
 ---
 

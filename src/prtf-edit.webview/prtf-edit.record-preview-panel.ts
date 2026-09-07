@@ -1899,7 +1899,7 @@ export class RecordPreviewPanel {
 	<div id="toolbarContainer">
 		${unsupportedAfpdsKeywords.length > 0 ? `<div id="afpdsWarning" title="Not drawn by this preview — check the source for what these actually produce">⚠️ This record uses AFPDS keyword(s) not supported by the preview yet: ${escapeHtml(unsupportedAfpdsKeywords.join(', '))}. What's shown below may be incomplete.</div>` : ''}
 		<div id="toolbarRow1" class="toolbar-row">
-			<button id="focusModeBtn" title="Hide the source code editor to focus on the preview (tree view stays visible)">${this.focusModeActive ? '🗗 Show code' : '🗖 Focus'}</button>
+			<button id="focusModeBtn" class="${this.focusModeActive ? 'active' : ''}" title="Hide the source code editor to focus on the preview (tree view stays visible)">${this.focusModeActive ? '🗗 Show code' : '🗖 Focus'}</button>
 			<button id="fitScreenBtn" class="${this.fitToScreen ? 'active' : ''}" title="Scale the whole page to fit the visible area, so nothing is hidden below the fold">🔍 Fit to Screen</button>
 			<button id="configBtn" ${this.focusModeActive ? 'disabled' : ''} title="Configure the preview (decimal format, date separator)">⚙ Configuration</button>
 			${fileSpacingEntries.length > 0 ? `<button type="button" id="fileSpacingBtn" class="spacing-item-btn${anySpacingActive(fileSpacingEntries) ? ' active' : ''}" title="${escapeHtml(spacingTitle('File', fileSpacingEntries))}">📄 S</button>` : ''}
