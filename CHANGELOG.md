@@ -3,9 +3,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.2.4] - 2026-09-07
+## [0.3.0] - 2026-09-07
 
 ### Added
+- **Configuration panel**: a new "⚙ Configuration" button in the preview toolbar opens a panel to choose the decimal/thousands-separator convention (US/European) and the date-separator convention (US `/` / European `-`) the preview renders edited numeric fields with — set by hand, fetched from a connected IBM i's `QDECFMT`/`QDATSEP` system values, or reset to default. Persists across sessions.
+- `EDTWRD()` (Edit Word) is now rendered in the preview: previously ignored entirely, a field carrying it showed as a plain, unedited placeholder instead of the actual edit-word mask.
+- `EDTCDE(W)` and `EDTCDE(Y)` (the date-editing codes) are now rendered in the preview, using IBM i's own length-dependent digit/separator patterns and the Configuration panel's date-separator setting.
 - **Selection status line** in the preview toolbar: selecting a field shows its name, size, and position (e.g. `PRSUBTOTAL (11,2) — Pos= 13, 113`); a constant shows `1 constant selected — Pos= ..., width N` — or, for a bare system-keyword constant (`DATE`/`TIME`/`PAGNBR`), its own name instead of the generic message.
 - A warning banner when the previewed record uses an AFPDS-only keyword this extension doesn't draw yet (`BOX`, `LINE`, `GDF`, `OVERLAY`, `PAGSEG`, `POSITION`, `AFPRSC`, `BARCODE`) — the same idea as RLU's own notice, except the rest of the record (whatever the preview *does* understand) still renders below it instead of being replaced entirely.
 - Two or more fields/constants sharing the exact same position (e.g. each conditioned on a different indicator) are no longer silently unreachable behind whichever one happened to render on top: that cell now shows a dashed outline on hover, and clicking it again cycles through the rest — the selection square itself turns green instead of blue while what's selected is one of these stacked items.

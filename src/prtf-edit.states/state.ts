@@ -9,6 +9,10 @@ import { PrtfElement } from '../prtf-edit.model/prtf-edit.model';
 
 export class ExtensionState {
 
+    /** Assigned once, first thing in activate() — lets any module reach `globalState` (e.g. the
+     * Configuration panel's decimal/date-format settings) without threading the context through
+     * every call site that needs it. */
+    static context: vscode.ExtensionContext;
     static lastPrtfDocument: vscode.TextDocument | undefined;
     /** The most recently active PRTF editor — kept even after it stops being VS Code's own
      * `activeTextEditor` (e.g. the preview webview or tree view has focus, or the preview's

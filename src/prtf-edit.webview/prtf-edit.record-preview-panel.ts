@@ -15,6 +15,8 @@ import { addFieldAt } from '../prtf-edit.commands/prtf-edit.add-field';
 import { editSpacing, editRecordSpacing, editFileSpacing, keywordPattern, SPACING_KEYWORDS, FILE_SPACING_KEYWORDS } from '../prtf-edit.commands/prtf-edit.edit-spacing';
 import { deleteElement } from '../prtf-edit.commands/prtf-edit.delete-element';
 import { editAttributes } from '../prtf-edit.commands/prtf-edit.edit-attributes';
+import { getDecimalSeparators } from '../prtf-edit.utils/prtf-edit.decimal-format';
+import { getDateSeparator } from '../prtf-edit.utils/prtf-edit.date-format';
 
 /** Default page size (66 lines is the traditional 11" @ 6 LPI page; 132 columns is 10 CPI on
  * standard wide computer paper — both just starting points, editable in the toolbar). */
@@ -149,6 +151,7 @@ function itemFlags(ownIndicators: PrtfIndicator[] | undefined, attributes: PrtfA
 			|| hasUnderline(attributes)
 			|| hasHighlight(attributes, undefined)
 			|| parseEdtcde(attributes) !== undefined
+			|| parseEdtwrd(attributes) !== undefined
 	};
 };
 
@@ -234,28 +237,86 @@ export const EDIT_CODES: Record<string, EditCodeInfo> = {
 	'P': { commas: false, sign: 'prefixMinus' }, 'Q': { commas: false, sign: 'prefixMinus' },
 };
 
-/** Groups a run of `digitCount` 9s with commas every 3 digits from the right (e.g. 7 -> "9,999,999"). */
-function groupDigits(digitCount: number): string {
+/** Groups a run of `digitCount` 9s with `thousandsSeparator` every 3 digits from the right (e.g.
+ * 7, ',' -> "9,999,999") — the configured decimal format's own thousands separator (see
+ * prtf-edit.utils/prtf-edit.decimal-format.ts), not always a comma. */
+function groupDigits(digitCount: number, thousandsSeparator: string): string {
 	if (digitCount <= 0) {return '';};
 	const firstGroupLen = ((digitCount - 1) % 3) + 1;
 	const groups = ['9'.repeat(firstGroupLen)];
 	for (let remaining = digitCount - firstGroupLen; remaining > 0; remaining -= 3) {
 		groups.push('999');
 	};
-	return groups.join(',');
+	return groups.join(thousandsSeparator);
 };
 
 /**
  * Parses EDTCDE(edit-code [* | floating-currency-symbol]) — the edit code itself, and its
  * optional second parameter, which is either '*' (asterisk-fill — doesn't affect width) or a
- * literal currency symbol (does).
+ * literal currency symbol (does). Recognizes W and Y (the date-editing codes — see
+ * dateEditCodePlaceholder below) alongside the 16 standard codes in EDIT_CODES; a currency/
+ * asterisk-fill second parameter makes no real DDS sense on either and is simply ignored by
+ * whichever caller reads `code` back out.
  */
 export function parseEdtcde(attributes: PrtfAttribute[] | undefined): { code: string; currency?: string } | undefined {
 	for (const attr of attributes ?? []) {
-		const match = attr.value.match(/EDTCDE\(\s*([1-4A-DJ-Q])\s*(?:(\*)|([^\s)]+))?\s*\)/i);
+		const match = attr.value.match(/EDTCDE\(\s*([1-4A-DJ-QWY])\s*(?:(\*)|([^\s)]+))?\s*\)/i);
 		if (match) {return { code: match[1].toUpperCase(), currency: match[3] };};
 	};
 	return undefined;
+};
+
+/**
+ * IBM i's own length-keyed digit/separator shape for EDTCDE(W) (date fields 5-8 digits long) and
+ * EDTCDE(Y) (3-8 digits) — see "IBM i edit codes in printer files" in the DDS reference. 'n' marks
+ * a digit position; '/' marks where the date separator goes (see dateEditCodePlaceholder).
+ */
+const DATE_EDIT_CODE_PATTERNS: Record<'W' | 'Y', Record<number, string>> = {
+	W: { 5: 'nn/nnn', 6: 'nnnn/nn', 7: 'nnnn/nnn', 8: 'nnnn/nn/nn' },
+	Y: { 3: 'nn/n', 4: 'nn/nn', 5: 'nn/nn/n', 6: 'nn/nn/nn', 7: 'nnn/nn/nn', 8: 'nn/nn/nnnn' }
+};
+
+/**
+ * Approximates an EDTCDE(W)/EDTCDE(Y)-edited field's worst-case printed form, per
+ * DATE_EDIT_CODE_PATTERNS: every 'n' filled with '9' (the same "every digit significant"
+ * convention every other edit-code mask here uses — real run-time output only ever suppresses
+ * leading zeros from this, never grows past it), every '/' replaced with the configured date
+ * separator (see prtf-edit.utils/prtf-edit.date-format.ts — real DDS only actually varies this
+ * from a literal '/' when the field also carries the DATE keyword, driven by the DATSEP job
+ * attribute at print time; this preview applies the same configured separator either way, since
+ * there's no DATFMT/DATSEP tracked here to tell the two cases apart). Undefined when the field's
+ * length falls outside the range either code actually supports — falls back to the plain
+ * placeholder, same as an unresolvable user-defined (5-9) code.
+ */
+function dateEditCodePlaceholder(code: 'W' | 'Y', length: number): string | undefined {
+	const pattern = DATE_EDIT_CODE_PATTERNS[code][length];
+	if (!pattern) {return undefined;};
+	return pattern.replace(/n/g, '9').replace(/\//g, getDateSeparator());
+};
+
+/** Parses EDTWRD('...') — the raw edit-word literal, with a doubled quote ('') unescaped to one
+ * literal quote, same convention as TEXT(). DDS doesn't allow EDTWRD and EDTCDE on the same field,
+ * so editedNumericPlaceholder checks this one first; whichever is actually coded is the only one
+ * that ever matches. */
+export function parseEdtwrd(attributes: PrtfAttribute[] | undefined): string | undefined {
+	for (const attr of attributes ?? []) {
+		const match = attr.value.match(/\bEDTWRD\(\s*'((?:[^']|'')*)'\s*\)/i);
+		if (match) {return match[1].replace(/''/g, "'");};
+	};
+	return undefined;
+};
+
+/**
+ * Approximates an EDTWRD-edited field's worst-case printed form: every blank in the edit word is
+ * a digit position — filled with '9', the same "every digit significant" convention
+ * editedNumericPlaceholder uses for EDTCDE below — and every other character (a literal separator
+ * like '-'/'/', a currency symbol, ...) prints verbatim, at its own fixed spot. An '&' splits the
+ * word into its positive/zero part and its negative part (see "Edit word" in the DDS reference);
+ * only the part before it is used, since there's no real value here to decide which part would
+ * actually print.
+ */
+function edtwrdPlaceholder(rawWord: string): string {
+	return rawWord.split('&')[0].replace(/ /g, '9');
 };
 
 /**
@@ -264,19 +325,28 @@ export function parseEdtcde(attributes: PrtfAttribute[] | undefined): { code: st
  * "fill with 9s at the edited width" convention RLU's own design view uses, rather than the raw
  * O/6 placeholder. Real width can only be smaller than this at run time (zero-suppression,
  * positive values), never larger, so this is the right shape to check for overlap against.
- * Returns undefined when there's no EDTCDE, or it's a user-defined code (5-9) whose editing comes
- * from a CRTEDTD object we have no way to resolve here — those fall back to the plain placeholder.
+ * Returns undefined when there's neither EDTWRD nor EDTCDE, or EDTCDE names a user-defined code
+ * (5-9) whose editing comes from a CRTEDTD object we have no way to resolve here — those fall back
+ * to the plain placeholder.
  * Also reused by fill-constant.ts, unconditionally on the field's own attributes (not gated by any
  * live indicator-simulation state — a "reference width" lookup sizes for the widest an
- * EDTCDE-conditioned field could ever print, the same conservative reasoning as everywhere else
- * this function is used).
+ * edited field could ever print, the same conservative reasoning as everywhere else this function
+ * is used).
  * @param activeAttributes - The field's own attributes, already filtered down to whichever are
- *   currently indicator-active (see isItemDisplayed) — so a conditionally-applied EDTCDE is only
- *   honored when its own condition is currently met.
+ *   currently indicator-active (see isItemDisplayed) — so a conditionally-applied EDTWRD/EDTCDE is
+ *   only honored when its own condition is currently met.
  */
 export function editedNumericPlaceholder(field: PrtfField, activeAttributes: PrtfAttribute[]): string | undefined {
+	const edtwrd = parseEdtwrd(activeAttributes);
+	if (edtwrd !== undefined) {return edtwrdPlaceholder(edtwrd);};
+
 	const edtcde = parseEdtcde(activeAttributes);
 	if (!edtcde) {return undefined;};
+
+	if (edtcde.code === 'W' || edtcde.code === 'Y') {
+		return dateEditCodePlaceholder(edtcde.code, field.length ?? 0);
+	};
+
 	const info = EDIT_CODES[edtcde.code];
 	if (!info) {return undefined;};
 
@@ -284,8 +354,9 @@ export function editedNumericPlaceholder(field: PrtfField, activeAttributes: Prt
 	const decimals = field.decimals ?? 0;
 	const integerDigits = Math.max(length - decimals, 0);
 
-	const integerPart = info.commas ? groupDigits(integerDigits) : '9'.repeat(integerDigits);
-	const decimalPart = decimals > 0 ? '.' + '9'.repeat(decimals) : '';
+	const { thousands, decimal } = getDecimalSeparators();
+	const integerPart = info.commas ? groupDigits(integerDigits, thousands) : '9'.repeat(integerDigits);
+	const decimalPart = decimals > 0 ? decimal + '9'.repeat(decimals) : '';
 	const currencyPart = edtcde.currency ?? '';
 	const prefixSign = info.sign === 'prefixMinus' ? '-' : '';
 	const suffixSign = info.sign === 'suffixCr' ? 'CR' : info.sign === 'suffixMinus' ? '-' : '';
@@ -341,7 +412,7 @@ function editedPagnbrPlaceholder(activeAttributes: PrtfAttribute[]): string | un
 	const info = EDIT_CODES[edtcde.code];
 	if (!info) {return undefined;};
 	const currencyPart = edtcde.currency ?? '';
-	return `${currencyPart}${info.commas ? groupDigits(4) : '9'.repeat(4)}`;
+	return `${currencyPart}${info.commas ? groupDigits(4, getDecimalSeparators().thousands) : '9'.repeat(4)}`;
 };
 
 /**
@@ -355,7 +426,7 @@ function editedPagnbrPlaceholder(activeAttributes: PrtfAttribute[]): string | un
  */
 function constantPlaceholderText(constant: PrtfConstant, activeAttributes: PrtfAttribute[]): string {
 	for (const attr of activeAttributes) {
-		const placeholder = systemKeywordPlaceholder(attr.value);
+		const placeholder = systemKeywordPlaceholder(attr.value, getDateSeparator());
 		if (placeholder) {
 			const isPagnbr = /^PAGNBR\b/i.test(attr.value.trim());
 			return (isPagnbr && editedPagnbrPlaceholder(activeAttributes)) || placeholder;
@@ -1150,6 +1221,14 @@ export class RecordPreviewPanel {
 				this.fitToScreen = !this.fitToScreen;
 				this.panel.webview.postMessage({ type: 'fitToScreenChanged', active: this.fitToScreen });
 				break;
+			case 'openConfiguration':
+				// Guards the same rule the button's own disabled state already enforces: opening
+				// the Configuration panel "beside" this one would silently drop focus mode instead
+				// of respecting it.
+				if (!this.focusModeActive) {
+					await vscode.commands.executeCommand('prtf-edit.configure-preview');
+				};
+				break;
 			case 'setPageSize':
 				this.rows = clampPageSize(message.rows, DEFAULT_ROWS);
 				this.cols = clampPageSize(message.cols, DEFAULT_COLS);
@@ -1822,6 +1901,7 @@ export class RecordPreviewPanel {
 		<div id="toolbarRow1" class="toolbar-row">
 			<button id="focusModeBtn" title="Hide the source code editor to focus on the preview (tree view stays visible)">${this.focusModeActive ? '🗗 Show code' : '🗖 Focus'}</button>
 			<button id="fitScreenBtn" class="${this.fitToScreen ? 'active' : ''}" title="Scale the whole page to fit the visible area, so nothing is hidden below the fold">🔍 Fit to Screen</button>
+			<button id="configBtn" ${this.focusModeActive ? 'disabled' : ''} title="Configure the preview (decimal format, date separator)">⚙ Configuration</button>
 			${fileSpacingEntries.length > 0 ? `<button type="button" id="fileSpacingBtn" class="spacing-item-btn${anySpacingActive(fileSpacingEntries) ? ' active' : ''}" title="${escapeHtml(spacingTitle('File', fileSpacingEntries))}">📄 S</button>` : ''}
 		</div>
 		<div id="toolbarRow2" class="toolbar-row">
@@ -1888,6 +1968,9 @@ export class RecordPreviewPanel {
 		});
 		document.getElementById('fitScreenBtn').addEventListener('click', () => {
 			vscode.postMessage({ type: 'toggleFitToScreen' });
+		});
+		document.getElementById('configBtn').addEventListener('click', () => {
+			vscode.postMessage({ type: 'openConfiguration' });
 		});
 		document.getElementById('overlayRepeatToggle').addEventListener('change', e => {
 			vscode.postMessage({ type: 'setOverlayRepeat', enabled: e.target.checked });
@@ -2305,6 +2388,9 @@ export class RecordPreviewPanel {
 				const focusModeBtn = document.getElementById('focusModeBtn');
 				focusModeBtn.textContent = event.data.active ? '🗗 Show code' : '🗖 Focus';
 				focusModeBtn.classList.toggle('active', event.data.active);
+				// Opening Configuration "beside" this panel while focus mode has maximized its
+				// editor group would silently break out of that maximized layout.
+				document.getElementById('configBtn').disabled = event.data.active;
 			};
 			if (event.data.type === 'rulerChanged') {
 				document.getElementById('page').classList.toggle('pf-ruler-on', event.data.active);

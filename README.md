@@ -21,7 +21,7 @@ PRTF-edit doesn't replace your compiler — it closes the gap between writing DD
 
 ### Page-layout preview
 - Click the preview icon on a record to open a print-style simulation of its layout, rendered on a character grid at the page size you choose (rows × columns, default 66×132).
-- Fields show as `O` or `6` placeholders (the familiar SDA/DFU convention) — hover one for its name and description. A numeric field with an edit code (`EDTCDE`) is shown at its worst-case edited width (commas, sign), not just its raw length.
+- Fields show as `O` or `6` placeholders (the familiar SDA/DFU convention) — hover one for its name and description. A numeric field with an edit code (`EDTCDE`) or an edit word (`EDTWRD`) is shown at its worst-case edited width (commas, sign, separators), not just its raw length — including the date-editing codes `EDTCDE(W)`/`EDTCDE(Y)`.
 - `COLOR`, `HIGHLIGHT`, and `UNDERLINE` render visually, at both record and field level.
 - Drag a field or constant anywhere on the page to reposition it — the preview understands both records positioned with an explicit Line/Position and "flow" records positioned via `SKIPB`/`SPACEB`/`SPACEA`/`SKIPA`, adjusting whichever applies, including a file-level `SKIPB`/`SKIPA` cascading into every record the way real DDS applies it.
 - **"+ Field" / "+ Constant"**: click the button, then click a spot on the page to place a new one there. A long constant automatically splits across DDS's own continuation convention.
@@ -34,6 +34,7 @@ PRTF-edit doesn't replace your compiler — it closes the gap between writing DD
 - **"Indicators"**: simulate which indicators are on or off, to see exactly which fields, constants, and keywords would print — including how a conditioned `SKIPB`/`SPACEB`/`SPACEA`/`SKIPA` shifts everything printed after it, and indicators used only on a record-, or file-level keyword with no field of its own. Only shown when the record you're viewing actually uses indicators.
 - **Spacing at a glance**: a field or constant with its own `SKIPB`/`SPACEB`/`SPACEA`/`SKIPA` shows a small "S" marker, even before you select it. Select it and its keyword(s) appear as toggle buttons right under Indicators — lit blue when their own indicator condition is currently satisfied — click one to change its value directly. The record and the file get the same treatment: an "S" next to the page for the record's own spacing (staying visible as you scroll a tall page), and a "📄 S" in the toolbar for the file's.
 - **"📏 Ruler"** for row/column numbers alongside the page, **"🗖 Focus"** to hide the source editor and concentrate on the preview, **"🔍 Fit to Screen"** to scale the whole page down (or up) so content placed far down a tall page is visible without scrolling.
+- **"⚙ Configuration"**: choose the decimal/thousands-separator (US/European) and date-separator (US `/` / European `-`) conventions the preview edits numeric fields with — set by hand, fetched from a connected IBM i's `QDECFMT`/`QDATSEP` system values, or reset to default. Persists across sessions.
 - A record using an AFPDS-only keyword the preview can't draw (`BOX`, `LINE`, `GDF`, `OVERLAY`, `PAGSEG`, `POSITION`, `AFPRSC`, `BARCODE` — see **To Do** below) shows a warning banner instead of silently rendering as if that content weren't there. Whatever the preview *does* understand in the same record still renders normally underneath it.
 
 ### Editing from the tree
@@ -88,7 +89,9 @@ This extension is under active development — some DDS keywords aren't supporte
 See the full changelog [here](./CHANGELOG.md).
 
 ### Latest
-**0.2.4** - 2026-09-07
+**0.3.0** - 2026-09-07
+- Added a "⚙ Configuration" panel: decimal/thousands-separator and date-separator conventions (US/European), settable by hand, fetched from a connected IBM i, or reset to default.
+- Added preview support for `EDTWRD()` and for the `EDTCDE(W)`/`EDTCDE(Y)` date-editing codes — both previously ignored, showing as a plain unedited placeholder.
 - Added a selection status line above the preview's action buttons (field name/size/position, or constant position/width).
 - Added a warning banner when the previewed record uses an AFPDS-only keyword the preview can't draw yet (`BOX`, `PAGSEG`, `BARCODE`, ...), instead of silently rendering it as if that content weren't there.
 - Added a dashed-outline hover cue and click-to-cycle for fields/constants sharing the exact same position, so none of them are silently unreachable behind whichever one renders on top.

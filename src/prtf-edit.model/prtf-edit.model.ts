@@ -85,10 +85,14 @@ export function isLiteralConstantValue(value: string): boolean {
  * DATFMT/TIMFMT/EDTCDE at print time — just a representative stand-in, same spirit as the O/6
  * field placeholders.
  * @param attributeValue - One field/constant attribute's raw value text
+ * @param dateSeparator - Character to place between DATE's day/month/year groups — defaults to
+ *   the same '/' the configured date-separator format defaults to (see
+ *   prtf-edit.utils/prtf-edit.date-format.ts); callers that only check this function's return
+ *   value's definedness or length (not its actual characters) can safely omit it.
  */
-export function systemKeywordPlaceholder(attributeValue: string): string | undefined {
+export function systemKeywordPlaceholder(attributeValue: string, dateSeparator: string = '/'): string | undefined {
   const upper = attributeValue.toUpperCase();
-  if (upper === 'DATE' || upper.startsWith('DATE(')) {return 'DD-DD-DD';};
+  if (upper === 'DATE' || upper.startsWith('DATE(')) {return `DD${dateSeparator}DD${dateSeparator}DD`;};
   if (upper === 'TIME' || upper.startsWith('TIME(')) {return 'TT:TT:TT';};
   // 9999 (not a plausible "page 1"), matching RLU's own "fill with the widest possible value"
   // design-view convention — the page count never grows past 9999 anyway (see the PAGNBR
