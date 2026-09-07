@@ -139,6 +139,57 @@ export function findTextKeyword(attributes: PrtfAttribute[] | undefined): string
   return undefined;
 };
 
+/**
+ * DDS printer-file keywords this extension doesn't understand yet — the AFPDS-only graphics/
+ * resource surface the README's own "To Do" already calls out as out of scope for now. The
+ * preview has no way to draw what these actually describe (a BOX/LINE shape, a barcode symbol, a
+ * PAGSEG/OVERLAY resource, an AFPRSC reference, explicit AFP POSITIONing) — silently rendering the
+ * record as if they weren't there would be misleading rather than merely incomplete, the same
+ * reasoning RLU itself acts on when it refuses to lay out a record like this at all ("Formato de
+ * Registro AFPDS").
+ */
+export const UNSUPPORTED_AFPDS_KEYWORDS = ['AFPRSC', 'BOX', 'LINE', 'GDF', 'OVERLAY', 'PAGSEG', 'POSITION', 'BARCODE'] as const;
+
+/**
+ * Which of UNSUPPORTED_AFPDS_KEYWORDS (if any) appear among one element's own attributes, in
+ * UNSUPPORTED_AFPDS_KEYWORDS's own order. Every one of these keywords always takes a parenthesized
+ * parameter in real DDS, so matching "KEYWORD(" (word-boundary aware, same convention as the
+ * parser's own SKIPB/SPACEB matching) is enough to avoid a false hit on an unrelated word that
+ * merely starts with the same letters.
+ */
+function findUnsupportedAfpdsKeywords(attributes: PrtfAttribute[] | undefined): string[] {
+  return UNSUPPORTED_AFPDS_KEYWORDS.filter(keyword => {
+    const pattern = new RegExp(`(?:\\b|(?<=\\d))${keyword}\\(`, 'i');
+    return (attributes ?? []).some(attr => pattern.test(attr.value));
+  });
+};
+
+/**
+ * Every unsupported AFPDS keyword (see UNSUPPORTED_AFPDS_KEYWORDS) used anywhere in one record
+ * format — its own attributes plus every one of its fields' and constants' — so the preview can
+ * warn once per record instead of silently mis-rendering (or simply omitting) whatever those
+ * keywords were meant to draw. De-duplicated, in UNSUPPORTED_AFPDS_KEYWORDS's own order.
+ * @param elements - The full parsed document (ExtensionState.lastPrtfElements)
+ * @param recordName - The record format to scan
+ */
+export function findUnsupportedAfpdsKeywordsInRecord(elements: PrtfElement[], recordName: string): string[] {
+  const record = elements.find((el): el is PrtfRecord => el.kind === 'record' && el.name === recordName);
+  if (!record) {return [];};
+
+  const attributeSets: (PrtfAttribute[] | undefined)[] = [record.attributes];
+  for (const el of elements) {
+    if ((el.kind === 'field' || el.kind === 'constant') && el.recordname === recordName) {
+      attributeSets.push(el.attributes);
+    };
+  };
+
+  const found = new Set<string>();
+  for (const attrs of attributeSets) {
+    for (const keyword of findUnsupportedAfpdsKeywords(attrs)) {found.add(keyword);};
+  };
+  return UNSUPPORTED_AFPDS_KEYWORDS.filter(keyword => found.has(keyword));
+};
+
 // ELEMENT-SPECIFIC INTERFACES
 
 /** DDS File element */

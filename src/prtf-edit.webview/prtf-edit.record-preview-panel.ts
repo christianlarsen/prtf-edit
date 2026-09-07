@@ -5,7 +5,7 @@
 */
 
 import * as vscode from 'vscode';
-import { PrtfElement, PrtfField, PrtfConstant, PrtfRecord, PrtfFile, PrtfAttribute, PrtfIndicator, systemKeywordPlaceholder, findTextKeyword, groupIndicatorsByCondition } from '../prtf-edit.model/prtf-edit.model';
+import { PrtfElement, PrtfField, PrtfConstant, PrtfRecord, PrtfFile, PrtfAttribute, PrtfIndicator, systemKeywordPlaceholder, isLiteralConstantValue, findTextKeyword, findUnsupportedAfpdsKeywordsInRecord, groupIndicatorsByCondition } from '../prtf-edit.model/prtf-edit.model';
 import { simulateRecordFlow } from '../prtf-edit.parser/prtf-edit.parser';
 import { ExtensionState } from '../prtf-edit.states/state';
 import { revealInTree } from '../prtf-edit.providers/prtf-edit.providers';
@@ -60,6 +60,20 @@ interface PageItem {
 	/** Source line to navigate to / highlight from — a field's own line, or a constant's first
 	 * line (its literal text may continue across several). */
 	lineIndex: number;
+	/** 'field' or 'constant' — which kind of element this item came from. Used to build the
+	 * selection status line (see buildSelectionLabel) the same way dspf-edit's own preview does. */
+	kind: 'field' | 'constant';
+	/** A field's own name, always set. For a constant, only set when it's a bare system-keyword
+	 * invocation (DATE/TIME/PAGNBR — see isLiteralConstantValue) rather than a quoted literal: a
+	 * quoted literal's raw DDS "name" is just its text, already captured in `text` above, not a
+	 * meaningful label on its own — but PAGNBR and friends are worth naming in the selection
+	 * status line the same way a field's name is (see buildSelectionLabel). */
+	name?: string;
+	/** The field's own data length/decimals, straight from PrtfField — unset for a referenced
+	 * field (its real length lives in the external database field, not readable here) or a
+	 * constant (see `text.length` for its printed width instead). */
+	length?: number;
+	decimals?: number;
 	/** Shown as a hover tooltip over this item's cells: a field's name (plus its TEXT() keyword
 	 * description, if any), or a constant's TEXT() description alone (its own text already says
 	 * what it prints, so it only gets a tooltip when there's documentation to add). */
@@ -294,6 +308,24 @@ function stripQuotes(rawName: string): string {
 };
 
 /**
+ * The canonical keyword name (DATE/TIME/PAGNBR) for a constant's raw, non-literal "name" text —
+ * same recognized set as systemKeywordPlaceholder, but returning the keyword itself rather than
+ * its printed placeholder. A non-literal constant's raw text is the whole keyword-zone line it was
+ * coded on, which can carry another keyword right after it on the same line (e.g. "PAGNBR
+ * EDTCDE(Y)" — see systemKeywordPlaceholder's own doc comment); this strips that down to just the
+ * name worth showing in the selection status line. Undefined for anything unrecognized (a
+ * malformed/unrecognized bare keyword) — safer to fall back to the generic "1 constant selected"
+ * there than show a raw, possibly garbled string.
+ */
+function systemKeywordName(rawName: string): string | undefined {
+	const upper = rawName.toUpperCase();
+	if (upper === 'DATE' || upper.startsWith('DATE(') || upper.startsWith('DATE ')) {return 'DATE';};
+	if (upper === 'TIME' || upper.startsWith('TIME(') || upper.startsWith('TIME ')) {return 'TIME';};
+	if (upper === 'PAGNBR' || upper.startsWith('PAGNBR ')) {return 'PAGNBR';};
+	return undefined;
+};
+
+/**
  * PAGNBR's own edited-width placeholder, mirroring editedNumericPlaceholder's "fill with 9s at the
  * edited width" approach for a field — but against a fixed 4-digit unsigned counter (the '9999'
  * baseline systemKeywordPlaceholder already uses for a plain PAGNBR) rather than a field's own
@@ -461,6 +493,7 @@ function buildFieldPageItem(field: PrtfField, rowOverride: number | undefined, f
 	const spacing = itemSpacing(field.attributes, activeIndicators);
 	return {
 		row, col: field.column, text: fieldPlaceholderText(field, activeAttributes), title, lineIndex: field.lineIndex,
+		kind: 'field', name: field.name, length: field.length, decimals: field.decimals,
 		underline: hasUnderline(activeAttributes), flowPositioned,
 		bold: hasHighlight(activeAttributes, recordAttributes), color: getColor(activeAttributes),
 		spacing, flags: itemFlags(field.indicators, field.attributes, spacing)
@@ -478,12 +511,38 @@ function buildConstantPageItem(constant: PrtfConstant, rowOverride: number | und
 		'— right-click to edit SKIPB/SPACEB/SPACEA/SKIPA'
 	].filter(Boolean).join(' ');
 	const spacing = itemSpacing(constant.attributes, activeIndicators);
+	const isLiteral = constant.name === '' || isLiteralConstantValue(constant.name);
 	return {
 		row, col: constant.column, text: constantPlaceholderText(constant, activeAttributes), title, lineIndex: constant.lineIndex,
+		kind: 'constant', name: isLiteral ? undefined : systemKeywordName(constant.name),
 		underline: hasUnderline(activeAttributes), flowPositioned,
 		bold: hasHighlight(activeAttributes, recordAttributes), color: getColor(activeAttributes),
 		spacing, flags: itemFlags(undefined, constant.attributes, spacing)
 	};
+};
+
+/**
+ * One-line summary of whatever's currently selected on the page — name, size and position for a
+ * field, or "1 constant selected" plus position/width for a constant (mirrors dspf-edit's own
+ * preview, which shows the same line above its toolbar's action buttons). Empty when nothing's
+ * selected.
+ */
+function buildSelectionLabel(item: PageItem | undefined): string {
+	if (!item) {return '';};
+	if (item.kind === 'constant') {
+		// A bare system-keyword constant (DATE/TIME/PAGNBR) has a real name worth showing, same as
+		// a field — a plain literal constant doesn't (its DDS "name" is just its own printed text).
+		return item.name
+			? `${item.name} — Pos= ${item.row}, ${item.col}, width ${item.text.length}`
+			: `1 constant selected — Pos= ${item.row}, ${item.col}, width ${item.text.length}`;
+	};
+	if (item.length === undefined) {
+		// A referenced field: its real length lives in the external database field, not readable
+		// here — nothing true to show beyond the generic fallback.
+		return `1 field selected — Pos= ${item.row}, ${item.col}`;
+	};
+	const size = item.decimals ? `${item.length},${item.decimals}` : `${item.length}`;
+	return `${item.name} (${size}) — Pos= ${item.row}, ${item.col}`;
 };
 
 /**
@@ -680,6 +739,36 @@ export function collectComposedPageItems(elements: PrtfElement[], sequence: Sequ
 	};
 
 	return items;
+};
+
+/**
+ * How far down the page an overlay pushes the active record's own row-0 baseline — i.e. the
+ * offset collectPageItemsWithOverlay (below) silently adds to every one of the active record's
+ * flow-mode rows when the overlay record is declared *earlier* in the DDS source (see that
+ * function's own doc comment: whichever record comes first in source order is chained first,
+ * regardless of which one is "active"). Used to translate a page-absolute drop row from a drag
+ * back into the record-local row moveElement/resolveFlowModeMove actually reason about — both
+ * always simulate a record's own flow positions in isolation, starting at row 0, with no notion of
+ * an overlay. Without this, dragging an active flow-mode item horizontally only (no intended row
+ * change) while an earlier-declared overlay is active would still read as a row change of exactly
+ * this offset, and silently write a bogus SPACEB(n) for it.
+ * Zero whenever there's no overlay active, or the active record is the one chained first (its own
+ * row-0 baseline already lands on page row 0/1, no translation needed).
+ */
+export function resolveOverlayRowOffset(
+	elements: PrtfElement[],
+	recordName: string,
+	overlayRecordName: string | undefined
+): number {
+	if (!overlayRecordName) {return 0;};
+	const records = elements.filter((el): el is PrtfRecord => el.kind === 'record');
+	const activeRecord = records.find(r => r.name === recordName);
+	const overlayRecord = records.find(r => r.name === overlayRecordName);
+	if (!activeRecord || !overlayRecord || activeRecord.lineIndex <= overlayRecord.lineIndex) {return 0;};
+
+	// Mirrors collectPageItemsWithOverlay's own firstResult below: the overlay record, chained
+	// first, always renders at the resting indicator state.
+	return positionRecordEntry(elements, overlayRecord, 0, true, new Set<number>()).endLine;
 };
 
 /**
@@ -982,8 +1071,7 @@ export class RecordPreviewPanel {
 			panel.overlayRecordName = undefined;
 			panel.render();
 		} else {
-			panel.highlightLineIndex = target.targetLineIndex;
-			panel.panel.webview.postMessage({ type: 'highlightLine', lineIndex: target.targetLineIndex ?? null });
+			panel.postHighlight(target.targetLineIndex);
 		};
 	};
 
@@ -1068,8 +1156,7 @@ export class RecordPreviewPanel {
 					// the source cursor move above to loop back through a selection-change
 					// listener — the preview no longer follows the cursor at all (only an explicit
 					// tree click or a click inside the preview itself changes what's selected).
-					this.highlightLineIndex = target?.targetLineIndex ?? message.lineIndex;
-					this.panel.webview.postMessage({ type: 'highlightLine', lineIndex: this.highlightLineIndex ?? null });
+					this.postHighlight(target?.targetLineIndex ?? message.lineIndex);
 				};
 				break;
 			case 'deselect':
@@ -1087,7 +1174,16 @@ export class RecordPreviewPanel {
 					// would silently disagree with the row the user is actually dragging within.
 					const liveIndicators = this.indicatorsEnabled ? this.activeIndicators : new Set<number>();
 					const isAttributeActive = (attr: PrtfAttribute) => isItemDisplayed(attr.indicators, liveIndicators);
-					moveElement(message.lineIndex, message.newRow, message.newCol, this.rows, this.cols, Boolean(message.flow), isAttributeActive);
+					// The row the drag landed on is a page-absolute row (see cellFromEvent in the
+					// webview script); an overlay declared earlier in the source can push the active
+					// record's own flow-mode rows down the page by a fixed offset (see
+					// resolveOverlayRowOffset). moveElement/resolveFlowModeMove know nothing about
+					// that — they simulate the record's own flow in isolation from row 0 — so that
+					// offset has to come back out here before the row reaches them.
+					const rowOffset = message.flow
+						? resolveOverlayRowOffset(this.elements, this.recordName, this.overlayRecordName)
+						: 0;
+					moveElement(message.lineIndex, message.newRow - rowOffset, message.newCol, this.rows, this.cols, Boolean(message.flow), isAttributeActive);
 				};
 				break;
 			case 'editSpacing':
@@ -1153,6 +1249,35 @@ export class RecordPreviewPanel {
 		this.panel.webview.postMessage({ type: 'focusModeChanged', active: this.focusModeActive });
 	};
 
+	/** The page items for whatever's currently configured (record/overlay/composed sequence,
+	 * live indicator simulation) — shared between render() (the full HTML) and postHighlight()
+	 * (just the selection status line, without paying for a full re-render on every click). */
+	private collectCurrentItems(): PageItem[] {
+		const composing = this.sequence.length > 0;
+		const liveIndicators = this.indicatorsEnabled ? this.activeIndicators : new Set<number>();
+		// positionRecordEntry lists the overlay's items first — buildPageGrid/buildOwnerGrid
+		// resolve a shared cell to whichever item comes *last* in the array, so the active
+		// record's own content (and its interactivity) always wins where the two overlap.
+		return composing
+			? collectComposedPageItems(this.elements, this.sequence, this.overflowLine, liveIndicators)
+			: this.overlayRecordName
+				? collectPageItemsWithOverlay(this.elements, this.recordName, this.overlayRecordName, liveIndicators, this.overlayRepeat, this.rows)
+				: collectPageItems(this.elements, this.recordName, liveIndicators);
+	};
+
+	/** Updates the selection (highlightLineIndex) and tells the webview about it — both the plain
+	 * highlight and the field/constant summary line above the toolbar buttons (see
+	 * buildSelectionLabel) — without a full re-render, so a click/drag doesn't lose scroll
+	 * position or flicker the page. Only valid to call when the previewed record/overlay/sequence
+	 * haven't changed since the last render (an item's row/col here comes from that same
+	 * configuration) — a change of record calls render() directly instead, which embeds the
+	 * initial selection label itself. */
+	private postHighlight(lineIndex: number | undefined): void {
+		this.highlightLineIndex = lineIndex;
+		const item = lineIndex === undefined ? undefined : this.collectCurrentItems().find(it => it.lineIndex === lineIndex && !it.overlay);
+		this.panel.webview.postMessage({ type: 'highlightLine', lineIndex: lineIndex ?? null, label: buildSelectionLabel(item) });
+	};
+
 	private render(): void {
 		const records = this.elements.filter((e): e is PrtfRecord => e.kind === 'record');
 		if (!records.some(r => r.name === this.recordName) && records.length > 0) {
@@ -1160,15 +1285,7 @@ export class RecordPreviewPanel {
 		};
 
 		const composing = this.sequence.length > 0;
-		const liveIndicators = this.indicatorsEnabled ? this.activeIndicators : new Set<number>();
-		// positionRecordEntry lists the overlay's items first — buildPageGrid/buildOwnerGrid
-		// resolve a shared cell to whichever item comes *last* in the array, so the active
-		// record's own content (and its interactivity) always wins where the two overlap.
-		const items = composing
-			? collectComposedPageItems(this.elements, this.sequence, this.overflowLine, liveIndicators)
-			: this.overlayRecordName
-				? collectPageItemsWithOverlay(this.elements, this.recordName, this.overlayRecordName, liveIndicators, this.overlayRepeat, this.rows)
-				: collectPageItems(this.elements, this.recordName, liveIndicators);
+		const items = this.collectCurrentItems();
 
 		this.panel.title = composing ? 'Preview: (composed)' : `Preview: ${this.recordName || '(no records)'}`;
 		this.panel.webview.html = this.getHtml(records, items);
@@ -1177,6 +1294,18 @@ export class RecordPreviewPanel {
 	private getHtml(records: PrtfRecord[], items: PageItem[]): string {
 		const composing = this.sequence.length > 0;
 		const liveIndicators = this.indicatorsEnabled ? this.activeIndicators : new Set<number>();
+
+		// The selected field/constant's own summary line (name/size/position, or "1 constant
+		// selected"/width for a constant) — see buildSelectionLabel. Computed from `items` (this
+		// same render's own list) so it always agrees with whatever the page just resolved this
+		// item's row/col to, overlay offset and live indicator simulation included.
+		const initialSelectionLabel = buildSelectionLabel(items.find(it => it.lineIndex === this.highlightLineIndex && !it.overlay));
+
+		// AFPDS-only keywords (BOX, PAGSEG, BARCODE, ...) the preview can't draw — see
+		// findUnsupportedAfpdsKeywordsInRecord. Scoped to the single previewed record, same as the
+		// spacing badges just below; a composed sequence can mix several records, so there's no one
+		// record to point the warning at there.
+		const unsupportedAfpdsKeywords = !composing ? findUnsupportedAfpdsKeywordsInRecord(this.elements, this.recordName) : [];
 
 		// Record- and file-level spacing badges (see field/constant's own corner 'S' marker) — shown
 		// only outside composition, where "the current record"/"the file" are still single,
@@ -1287,6 +1416,19 @@ export class RecordPreviewPanel {
 		padding: 8px 12px;
 		z-index: 10;
 	}
+	/* Mirrors RLU's own "Formato de Registro AFPDS" notice — this preview can't draw a BOX/LINE/
+	   PAGSEG/etc., so it says so instead of silently showing an incomplete page as if it were the
+	   whole picture. Unlike RLU, the rest of the record (whatever fields/constants the preview
+	   *does* understand) still renders below it. */
+	#afpdsWarning {
+		background: #fff3cd;
+		color: #856404;
+		border: 1px solid #ffeeba;
+		border-radius: 3px;
+		padding: 6px 10px;
+		margin-bottom: 8px;
+		font-size: 12px;
+	}
 	.toolbar-row {
 		display: flex;
 		flex-wrap: wrap;
@@ -1307,6 +1449,9 @@ export class RecordPreviewPanel {
 	}
 	#sizeLabel {
 		font-weight: 600;
+		color: #000000;
+	}
+	#selectionLabel {
 		color: #000000;
 	}
 	.toolbar-row select, .toolbar-row input {
@@ -1563,6 +1708,7 @@ export class RecordPreviewPanel {
 </head>
 <body>
 	<div id="toolbarContainer">
+		${unsupportedAfpdsKeywords.length > 0 ? `<div id="afpdsWarning" title="Not drawn by this preview — check the source for what these actually produce">⚠️ This record uses AFPDS keyword(s) not supported by the preview yet: ${escapeHtml(unsupportedAfpdsKeywords.join(', '))}. What's shown below may be incomplete.</div>` : ''}
 		<div id="toolbarRow1" class="toolbar-row">
 			<button id="focusModeBtn" title="Hide the source code editor to focus on the preview (tree view stays visible)">${this.focusModeActive ? '🗗 Show code' : '🗖 Focus'}</button>
 			<button id="fitScreenBtn" class="${this.fitToScreen ? 'active' : ''}" title="Scale the whole page to fit the visible area, so nothing is hidden below the fold">🔍 Fit to Screen</button>
@@ -1585,6 +1731,9 @@ export class RecordPreviewPanel {
 					<input type="checkbox" id="overlayRepeatToggle" ${this.overlayRepeat ? 'checked' : ''} ${this.overlayRecordName ? '' : 'disabled'}> 🔁 Repeat
 				</label>
 			</label>
+		</div>
+		<div id="selectionLabelRow" class="toolbar-row" style="${initialSelectionLabel ? '' : 'display:none'}">
+			<span id="selectionLabel">${escapeHtml(initialSelectionLabel)}</span>
 		</div>
 		<div id="toolbarRow3" class="toolbar-row">
 			<button id="addFieldBtn" title="Click, then click a point on the page to place a new field there">+ Field</button>
@@ -1660,6 +1809,8 @@ export class RecordPreviewPanel {
 		const deleteItemBtn = document.getElementById('deleteItemBtn');
 		const attributesBtn = document.getElementById('attributesBtn');
 		const spacingBtn = document.getElementById('spacingBtn');
+		const selectionLabelRow = document.getElementById('selectionLabelRow');
+		const selectionLabel = document.getElementById('selectionLabel');
 		let currentHighlightLine = ${JSON.stringify(this.highlightLineIndex ?? null)};
 		function refreshSelectionButtonsState() {
 			const disabled = composeToggle.checked || currentHighlightLine === null || currentHighlightLine === undefined;
@@ -2000,7 +2151,7 @@ export class RecordPreviewPanel {
 		window.addEventListener('resize', () => { if (fitToScreenActive) applyFitToScreen(); });
 		applyFitToScreen();
 
-		function applyHighlight(lineIndex) {
+		function applyHighlight(lineIndex, label) {
 			document.querySelectorAll('.pf-highlight').forEach(el => el.classList.remove('pf-highlight'));
 			currentHighlightLine = lineIndex;
 			refreshSelectionButtonsState();
@@ -2008,9 +2159,11 @@ export class RecordPreviewPanel {
 				document.querySelectorAll('[data-line="' + lineIndex + '"]').forEach(el => el.classList.add('pf-highlight'));
 			};
 			renderSpacingRow(lineIndex);
+			selectionLabel.textContent = label || '';
+			selectionLabelRow.style.display = label ? '' : 'none';
 		};
 		window.addEventListener('message', event => {
-			if (event.data.type === 'highlightLine') applyHighlight(event.data.lineIndex);
+			if (event.data.type === 'highlightLine') applyHighlight(event.data.lineIndex, event.data.label);
 			if (event.data.type === 'focusModeChanged') {
 				const focusModeBtn = document.getElementById('focusModeBtn');
 				focusModeBtn.textContent = event.data.active ? '🗗 Show code' : '🗖 Focus';
@@ -2026,7 +2179,7 @@ export class RecordPreviewPanel {
 				applyFitToScreen();
 			};
 		});
-		applyHighlight(${JSON.stringify(this.highlightLineIndex ?? null)});
+		applyHighlight(${JSON.stringify(this.highlightLineIndex ?? null)}, ${JSON.stringify(initialSelectionLabel)});
 	</script>
 </body>
 </html>`;
