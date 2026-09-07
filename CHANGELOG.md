@@ -3,6 +3,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.2.4] - 2026-09-07
+
+### Added
+- **Selection status line** in the preview toolbar: selecting a field shows its name, size, and position (e.g. `PRSUBTOTAL (11,2) — Pos= 13, 113`); a constant shows `1 constant selected — Pos= ..., width N` — or, for a bare system-keyword constant (`DATE`/`TIME`/`PAGNBR`), its own name instead of the generic message.
+- A warning banner when the previewed record uses an AFPDS-only keyword this extension doesn't draw yet (`BOX`, `LINE`, `GDF`, `OVERLAY`, `PAGSEG`, `POSITION`, `AFPRSC`, `BARCODE`) — the same idea as RLU's own notice, except the rest of the record (whatever the preview *does* understand) still renders below it instead of being replaced entirely.
+- Two or more fields/constants sharing the exact same position (e.g. each conditioned on a different indicator) are no longer silently unreachable behind whichever one happened to render on top: that cell now shows a dashed outline on hover, and clicking it again cycles through the rest — the selection square itself turns green instead of blue while what's selected is one of these stacked items.
+
+### Fixed
+- Dragging a flow-positioned field/constant horizontally only (no intended row change) while an "Overlay" declared *earlier* in the source was active could still silently add or change that item's own `SPACEB` — the overlay's own flow height was being counted as part of the dragged item's row without the drag math accounting for it.
+
 ## [0.2.3] - 2026-08-30
 
 ### Fixed

@@ -470,6 +470,32 @@ export function buildOwnerGrid(rows: number, cols: number, items: PageItem[]): (
 	return grid;
 };
 
+/**
+ * Every item (index into `items`) covering each cell, in `items`' own array order — a superset of
+ * buildOwnerGrid, which only keeps the last one (whichever currently renders/is clickable there).
+ * Two or more fields/constants can legitimately share the same Line/Position in real DDS — most
+ * often each conditioned on a different indicator, so only one of them actually prints at a time —
+ * and buildOwnerGrid's own "last wins" rule would otherwise leave every other one permanently
+ * unreachable by click. Used to mark such a cell (see PageItem.overlay filtering in
+ * renderLineHtml) and let a repeated click on it cycle through the rest of the stack instead of
+ * only ever reselecting the same top item.
+ */
+export function buildStackGrid(rows: number, cols: number, items: PageItem[]): number[][][] {
+	const grid: number[][][] = Array.from({ length: rows }, () => Array.from({ length: cols }, () => []));
+
+	items.forEach((item, index) => {
+		const r = item.row - 1;
+		if (r < 0 || r >= rows) {return;}
+		for (let i = 0; i < item.text.length; i++) {
+			const c = item.col - 1 + i;
+			if (c < 0 || c >= cols) {continue;}
+			grid[r][c].push(index);
+		};
+	});
+
+	return grid;
+};
+
 /** Builds one field's PageItem — shared by the single-record and composed-sequence collectors.
  * `rowOverride`/`forceFlowFlag` let a composed render supply a row from its own running
  * simulation instead of the field's own (isolated-record) resolved `row`. `activeIndicators`
@@ -876,20 +902,39 @@ function escapeHtml(text: string): string {
 /** Renders one grid row as HTML, wrapping each run of cells owned by the same item in a single
  * <span data-line="..." title="...">, so it's individually hoverable/clickable/highlightable. An
  * overlay item (see PageItem.overlay) gets no `data-line` at all — it's a read-only reference
- * layer, dimmed via CSS and inert to every click/drag handler, which all key off that attribute. */
-function renderLineHtml(charLine: string, ownerLine: (number | undefined)[], items: PageItem[]): string {
+ * layer, dimmed via CSS and inert to every click/drag handler, which all key off that attribute.
+ * @param stackLine - This row's slice of buildStackGrid — every item covering each cell, not just
+ *   the one buildOwnerGrid picked as the winner. Two or more interactive items sharing a cell (see
+ *   buildStackGrid's own doc comment) get a `data-stack` listing all of their line indices, in
+ *   cycle order, plus a `pf-stacked` class the client hovers with a dashed outline — repeated
+ *   clicks there step through the rest of the stack instead of only ever reaching the top one. */
+function renderLineHtml(charLine: string, ownerLine: (number | undefined)[], stackLine: number[][], items: PageItem[]): string {
+	// The overlay's own (read-only, non-interactive) items never participate in the stack — cycling
+	// through them wouldn't select anything real, and they're excluded from data-line for the same
+	// reason.
+	const interactiveStacks = stackLine.map(cellStack => cellStack.filter(idx => !items[idx].overlay));
+
 	let html = '';
 	let i = 0;
 	while (i < charLine.length) {
 		const owner = ownerLine[i];
+		const stack = interactiveStacks[i];
+		const stackKey = stack.join(',');
 		let j = i + 1;
-		while (j < charLine.length && ownerLine[j] === owner) {j++;}
+		while (j < charLine.length && ownerLine[j] === owner && interactiveStacks[j].join(',') === stackKey) {j++;}
 		const segment = escapeHtml(charLine.slice(i, j));
 		if (owner !== undefined) {
 			const item = items[owner];
-			const titleAttr = item.title ? ` title="${escapeHtml(item.title)}"` : '';
+			const isStacked = !item.overlay && stack.length > 1;
+			const stackNames = isStacked ? stack.map(idx => items[idx].name ?? items[idx].text).join(', ') : '';
+			const baseTitle = item.title ?? '';
+			const stackedTitle = isStacked
+				? `${baseTitle ? baseTitle + ' — ' : ''}${stack.length} items share this position (${stackNames}) — click again to cycle through them`
+				: baseTitle;
+			const titleAttr = stackedTitle ? ` title="${escapeHtml(stackedTitle)}"` : '';
 			const flowAttr = item.flowPositioned ? ' data-flow="1"' : '';
 			const lineAttr = item.overlay ? '' : ` data-line="${item.lineIndex}"`;
+			const stackAttr = isStacked ? ` data-stack="${stack.map(idx => items[idx].lineIndex).join(',')}"` : '';
 			const spacingAttr = (!item.overlay && item.spacing && item.spacing.length > 0)
 				? ` data-spacing="${escapeHtml(JSON.stringify(item.spacing)).replace(/"/g, '&quot;')}"`
 				: '';
@@ -904,9 +949,10 @@ function renderLineHtml(charLine: string, ownerLine: (number | undefined)[], ite
 				'pf-item',
 				item.underline ? 'pf-underline' : '',
 				item.bold ? 'pf-bold' : '',
-				item.overlay ? 'pf-overlay' : ''
+				item.overlay ? 'pf-overlay' : '',
+				isStacked ? 'pf-stacked' : ''
 			].filter(Boolean).join(' ');
-			html += `<span class="${cssClass}"${lineAttr}${flowAttr}${spacingAttr}${flagsAttr}${titleAttr}${styleAttr}>${segment}</span>`;
+			html += `<span class="${cssClass}"${lineAttr}${flowAttr}${stackAttr}${spacingAttr}${flagsAttr}${titleAttr}${styleAttr}>${segment}</span>`;
 		} else {
 			html += segment;
 		};
@@ -1375,8 +1421,9 @@ export class RecordPreviewPanel {
 			const pageItems = items.filter(it => (it.page ?? 1) === pageNum);
 			const gridLines = buildPageGrid(this.rows, this.cols, pageItems);
 			const ownerGrid = buildOwnerGrid(this.rows, this.cols, pageItems);
+			const stackGrid = buildStackGrid(this.rows, this.cols, pageItems);
 			const rowsHtml = gridLines
-				.map((line, i) => `<div class="pf-line">${renderLineHtml(line, ownerGrid[i], pageItems)}</div>`)
+				.map((line, i) => `<div class="pf-line">${renderLineHtml(line, ownerGrid[i], stackGrid[i], pageItems)}</div>`)
 				.join('');
 			const label = showPageLabels ? `<div class="pf-page-label">Page ${pageNum}</div>` : '';
 			const recordBadge = (pageNum === (pageNumbers[0] ?? 1) && recordSpacingEntries.length > 0)
@@ -1663,6 +1710,23 @@ export class RecordPreviewPanel {
 	   neighboring characters out of their monospace grid cells. */
 	.pf-item.pf-highlight {
 		outline: 2px solid #337aff;
+		outline-offset: -1px;
+	}
+	/* The selection square turns green instead of blue when what's selected shares its cell with
+	   other items (see pf-stacked) — a reminder that this square doesn't own the whole cell, and
+	   clicking it again cycles to whichever else is stacked there rather than just reselecting it. */
+	.pf-item.pf-highlight.pf-stacked {
+		outline-color: #2e7d32;
+	}
+	/* Two or more fields/constants sharing the same Line/Position (typically each conditioned on a
+	   different indicator, so only one ever actually prints) — see buildStackGrid. Only the
+	   top-of-stack one is ever visible/clickable here (there's no way to draw more than one
+	   character per cell), so this dashed outline is the only hint the rest exist at all; the title
+	   tooltip names them, and clicking again cycles to the next one. Dashed rather than
+	   .pf-highlight's solid outline so the two read as distinct cues if the stacked item also
+	   happens to be the current selection. */
+	.pf-item.pf-stacked:hover {
+		outline: 1px dashed #b36b00;
 		outline-offset: -1px;
 	}
 	.pf-ghost {
@@ -2019,6 +2083,10 @@ export class RecordPreviewPanel {
 				// A flow-positioned item (SPACEB/SPACEA/SKIPB/SKIPA) has no Line entry to rewrite —
 				// the server adjusts its own SPACEB instead when this is set (see moveElement).
 				flow: el.dataset.flow === '1',
+				// Two or more items sharing this exact cell (see buildStackGrid/pf-stacked) — a
+				// plain click (not a drag) below cycles to the next one in this list instead of
+				// just reselecting whichever is currently on top, if that's already selected.
+				stack: el.dataset.stack ? el.dataset.stack.split(',').map(Number) : null,
 				width: el.textContent.length,
 				grabOffsetX: e.clientX - rect.left,
 				grabOffsetY: e.clientY - rect.top,
@@ -2075,7 +2143,16 @@ export class RecordPreviewPanel {
 					vscode.postMessage({ type: 'moveItem', lineIndex: dragState.lineIndex, newRow: dragState.row, newCol: dragState.col, flow: dragState.flow });
 				};
 			} else if (shouldApply) {
-				vscode.postMessage({ type: 'gotoLine', lineIndex: dragState.lineIndex });
+				// Clicking an already-selected stacked cell again steps to the next item sharing
+				// it, wrapping around — the only way to reach anything but the top-of-stack one
+				// (see pf-stacked). Clicking a stacked cell that isn't already selected falls
+				// through to the normal "select whatever's on top" behavior.
+				let targetLine = dragState.lineIndex;
+				if (dragState.stack && dragState.stack.length > 1) {
+					const stackPos = dragState.stack.indexOf(currentHighlightLine);
+					if (stackPos !== -1) {targetLine = dragState.stack[(stackPos + 1) % dragState.stack.length];};
+				};
+				vscode.postMessage({ type: 'gotoLine', lineIndex: targetLine });
 			};
 			dragState = null;
 		};
@@ -2156,7 +2233,18 @@ export class RecordPreviewPanel {
 			currentHighlightLine = lineIndex;
 			refreshSelectionButtonsState();
 			if (lineIndex !== null && lineIndex !== undefined) {
-				document.querySelectorAll('[data-line="' + lineIndex + '"]').forEach(el => el.classList.add('pf-highlight'));
+				// A stacked cell only ever has one <span> in the DOM (see pf-stacked) — its own
+				// data-line is whichever item is currently on top, not necessarily the one just
+				// selected by cycling. Fall back to matching it via data-stack instead, so the
+				// highlight square still lands on the right cell even for a non-top pick.
+				const direct = document.querySelectorAll('[data-line="' + lineIndex + '"]');
+				if (direct.length > 0) {
+					direct.forEach(el => el.classList.add('pf-highlight'));
+				} else {
+					document.querySelectorAll('[data-stack]').forEach(el => {
+						if (el.dataset.stack.split(',').map(Number).includes(lineIndex)) {el.classList.add('pf-highlight');};
+					});
+				};
 			};
 			renderSpacingRow(lineIndex);
 			selectionLabel.textContent = label || '';

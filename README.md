@@ -26,12 +26,15 @@ PRTF-edit doesn't replace your compiler — it closes the gap between writing DD
 - Drag a field or constant anywhere on the page to reposition it — the preview understands both records positioned with an explicit Line/Position and "flow" records positioned via `SKIPB`/`SPACEB`/`SPACEA`/`SKIPA`, adjusting whichever applies, including a file-level `SKIPB`/`SKIPA` cascading into every record the way real DDS applies it.
 - **"+ Field" / "+ Constant"**: click the button, then click a spot on the page to place a new one there. A long constant automatically splits across DDS's own continuation convention.
 - Select a field or constant on the page to edit it right there: **"🗑 Delete"** removes it entirely, **"🎨 Attributes"** sets or clears `TEXT`/`COLOR`/`HIGHLIGHT`/`UNDERLINE`/`EDTCDE`/`FONT`/`CHRID` from a simple picker, **"↕️ Spacing"** sets or clears its own `SKIPB`/`SPACEB`/`SPACEA`/`SKIPA` — no need to open the tree or remember DDS keyword syntax. Clicking empty space clears the selection.
+- The selected field or constant's name, size, and position show right above the action buttons (e.g. `PRSUBTOTAL (11,2) — Pos= 13, 113`, or `1 constant selected — Pos= 13, 89, width 9`) — a bare system-keyword constant (`DATE`/`TIME`/`PAGNBR`) shows its own name instead of the generic message.
+- Two or more fields/constants sharing the exact same position (e.g. each conditioned on a different indicator) are no longer hidden behind whichever one happens to render on top: hovering that cell shows a dashed outline, and clicking it again cycles through the rest — the selection square turns green instead of blue while what's selected is one of them.
 - Right-clicking a field or constant also opens the spacing editor directly, with the option to convert an explicit-Line record to flow positioning in one step.
 - **"Overlay"**: show another record dimmed behind the one you're editing, to check alignment between them — e.g. a header against the detail line printed below it. A **"🔁 Repeat"** toggle tiles the overlay down the whole page, so it stays visible even after a totals record's own `SKIPB` pushes it far down.
 - **"Compose sequence"**: preview several record formats together — each with its own repeat count — the way they'd actually print one after another (a header, several detail rows, a total line), with automatic page breaks once the content passes your configured page length, and optional repeating "standing" headers on every new page.
 - **"Indicators"**: simulate which indicators are on or off, to see exactly which fields, constants, and keywords would print — including how a conditioned `SKIPB`/`SPACEB`/`SPACEA`/`SKIPA` shifts everything printed after it, and indicators used only on a record-, or file-level keyword with no field of its own. Only shown when the record you're viewing actually uses indicators.
 - **Spacing at a glance**: a field or constant with its own `SKIPB`/`SPACEB`/`SPACEA`/`SKIPA` shows a small "S" marker, even before you select it. Select it and its keyword(s) appear as toggle buttons right under Indicators — lit blue when their own indicator condition is currently satisfied — click one to change its value directly. The record and the file get the same treatment: an "S" pinned to the page's corner for the record's own spacing, and a "📄 S" in the toolbar for the file's.
 - **"📏 Ruler"** for row/column numbers alongside the page, **"🗖 Focus"** to hide the source editor and concentrate on the preview, **"🔍 Fit to Screen"** to scale the whole page down (or up) so content placed far down a tall page is visible without scrolling.
+- A record using an AFPDS-only keyword the preview can't draw (`BOX`, `LINE`, `GDF`, `OVERLAY`, `PAGSEG`, `POSITION`, `AFPRSC`, `BARCODE` — see **To Do** below) shows a warning banner instead of silently rendering as if that content weren't there. Whatever the preview *does* understand in the same record still renders normally underneath it.
 
 ### Editing from the tree
 Right-click any record, field, or constant in the Definition tree:
@@ -85,8 +88,11 @@ This extension is under active development — some DDS keywords aren't supporte
 See the full changelog [here](./CHANGELOG.md).
 
 ### Latest
-**0.2.3** - 2026-08-30
-- Fixed deleting a field/constant/record (or clearing its last spacing keyword) when it was the very last thing in the source — it left a stray blank final line behind, which the next field/constant/record added would land after.
+**0.2.4** - 2026-09-07
+- Added a selection status line above the preview's action buttons (field name/size/position, or constant position/width).
+- Added a warning banner when the previewed record uses an AFPDS-only keyword the preview can't draw yet (`BOX`, `PAGSEG`, `BARCODE`, ...), instead of silently rendering it as if that content weren't there.
+- Added a dashed-outline hover cue and click-to-cycle for fields/constants sharing the exact same position, so none of them are silently unreachable behind whichever one renders on top.
+- Fixed a spurious `SPACEB` change when dragging a field/constant horizontally only, while an "Overlay" declared earlier in the source was active.
 
 ---
 
