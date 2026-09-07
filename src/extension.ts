@@ -18,11 +18,16 @@ import { registerRenameCommands } from './prtf-edit.commands/prtf-edit.rename-el
 import { registerEditConstantTextCommand } from './prtf-edit.commands/prtf-edit.edit-constant-text';
 import { registerFillConstantCommand } from './prtf-edit.commands/prtf-edit.fill-constant';
 import { registerEditRecordSpacingCommand } from './prtf-edit.commands/prtf-edit.edit-spacing';
+import { registerConfigurePreviewCommand } from './prtf-edit.commands/prtf-edit.configure-preview';
 import { revealLine } from './prtf-edit.utils/prtf-edit.navigation';
 import { RecordPreviewPanel } from './prtf-edit.webview/prtf-edit.record-preview-panel';
 
 // Activate extension
 export function activate(context: vscode.ExtensionContext) {
+
+	// Needed before anything else runs — the Configuration panel's decimal/date-format settings
+	// (and any other future globalState-backed setting) read this on every access.
+	ExtensionState.context = context;
 
 	// Create the tree data provider
 	const treeProvider = new PrtfTreeProvider();
@@ -79,6 +84,7 @@ export function activate(context: vscode.ExtensionContext) {
 	registerEditConstantTextCommand(context);
 	registerFillConstantCommand(context);
 	registerEditRecordSpacingCommand(context);
+	registerConfigurePreviewCommand(context);
 	initializeDocumentListeners(context, treeProvider);
 };
 

@@ -5,7 +5,7 @@
 */
 
 import * as vscode from 'vscode';
-import { PrtfElement, PrtfField, PrtfConstant, PrtfRecord, PrtfFile, PrtfAttribute, PrtfIndicator, systemKeywordPlaceholder, findTextKeyword, groupIndicatorsByCondition } from '../prtf-edit.model/prtf-edit.model';
+import { PrtfElement, PrtfField, PrtfConstant, PrtfRecord, PrtfFile, PrtfAttribute, PrtfIndicator, systemKeywordPlaceholder, isLiteralConstantValue, findTextKeyword, findUnsupportedAfpdsKeywordsInRecord, groupIndicatorsByCondition } from '../prtf-edit.model/prtf-edit.model';
 import { simulateRecordFlow } from '../prtf-edit.parser/prtf-edit.parser';
 import { ExtensionState } from '../prtf-edit.states/state';
 import { revealInTree } from '../prtf-edit.providers/prtf-edit.providers';
@@ -15,6 +15,8 @@ import { addFieldAt } from '../prtf-edit.commands/prtf-edit.add-field';
 import { editSpacing, editRecordSpacing, editFileSpacing, keywordPattern, SPACING_KEYWORDS, FILE_SPACING_KEYWORDS } from '../prtf-edit.commands/prtf-edit.edit-spacing';
 import { deleteElement } from '../prtf-edit.commands/prtf-edit.delete-element';
 import { editAttributes } from '../prtf-edit.commands/prtf-edit.edit-attributes';
+import { getDecimalSeparators } from '../prtf-edit.utils/prtf-edit.decimal-format';
+import { getDateSeparator } from '../prtf-edit.utils/prtf-edit.date-format';
 
 /** Default page size (66 lines is the traditional 11" @ 6 LPI page; 132 columns is 10 CPI on
  * standard wide computer paper — both just starting points, editable in the toolbar). */
@@ -60,6 +62,20 @@ interface PageItem {
 	/** Source line to navigate to / highlight from — a field's own line, or a constant's first
 	 * line (its literal text may continue across several). */
 	lineIndex: number;
+	/** 'field' or 'constant' — which kind of element this item came from. Used to build the
+	 * selection status line (see buildSelectionLabel) the same way dspf-edit's own preview does. */
+	kind: 'field' | 'constant';
+	/** A field's own name, always set. For a constant, only set when it's a bare system-keyword
+	 * invocation (DATE/TIME/PAGNBR — see isLiteralConstantValue) rather than a quoted literal: a
+	 * quoted literal's raw DDS "name" is just its text, already captured in `text` above, not a
+	 * meaningful label on its own — but PAGNBR and friends are worth naming in the selection
+	 * status line the same way a field's name is (see buildSelectionLabel). */
+	name?: string;
+	/** The field's own data length/decimals, straight from PrtfField — unset for a referenced
+	 * field (its real length lives in the external database field, not readable here) or a
+	 * constant (see `text.length` for its printed width instead). */
+	length?: number;
+	decimals?: number;
 	/** Shown as a hover tooltip over this item's cells: a field's name (plus its TEXT() keyword
 	 * description, if any), or a constant's TEXT() description alone (its own text already says
 	 * what it prints, so it only gets a tooltip when there's documentation to add). */
@@ -135,6 +151,7 @@ function itemFlags(ownIndicators: PrtfIndicator[] | undefined, attributes: PrtfA
 			|| hasUnderline(attributes)
 			|| hasHighlight(attributes, undefined)
 			|| parseEdtcde(attributes) !== undefined
+			|| parseEdtwrd(attributes) !== undefined
 	};
 };
 
@@ -220,28 +237,86 @@ export const EDIT_CODES: Record<string, EditCodeInfo> = {
 	'P': { commas: false, sign: 'prefixMinus' }, 'Q': { commas: false, sign: 'prefixMinus' },
 };
 
-/** Groups a run of `digitCount` 9s with commas every 3 digits from the right (e.g. 7 -> "9,999,999"). */
-function groupDigits(digitCount: number): string {
+/** Groups a run of `digitCount` 9s with `thousandsSeparator` every 3 digits from the right (e.g.
+ * 7, ',' -> "9,999,999") — the configured decimal format's own thousands separator (see
+ * prtf-edit.utils/prtf-edit.decimal-format.ts), not always a comma. */
+function groupDigits(digitCount: number, thousandsSeparator: string): string {
 	if (digitCount <= 0) {return '';};
 	const firstGroupLen = ((digitCount - 1) % 3) + 1;
 	const groups = ['9'.repeat(firstGroupLen)];
 	for (let remaining = digitCount - firstGroupLen; remaining > 0; remaining -= 3) {
 		groups.push('999');
 	};
-	return groups.join(',');
+	return groups.join(thousandsSeparator);
 };
 
 /**
  * Parses EDTCDE(edit-code [* | floating-currency-symbol]) — the edit code itself, and its
  * optional second parameter, which is either '*' (asterisk-fill — doesn't affect width) or a
- * literal currency symbol (does).
+ * literal currency symbol (does). Recognizes W and Y (the date-editing codes — see
+ * dateEditCodePlaceholder below) alongside the 16 standard codes in EDIT_CODES; a currency/
+ * asterisk-fill second parameter makes no real DDS sense on either and is simply ignored by
+ * whichever caller reads `code` back out.
  */
 export function parseEdtcde(attributes: PrtfAttribute[] | undefined): { code: string; currency?: string } | undefined {
 	for (const attr of attributes ?? []) {
-		const match = attr.value.match(/EDTCDE\(\s*([1-4A-DJ-Q])\s*(?:(\*)|([^\s)]+))?\s*\)/i);
+		const match = attr.value.match(/EDTCDE\(\s*([1-4A-DJ-QWY])\s*(?:(\*)|([^\s)]+))?\s*\)/i);
 		if (match) {return { code: match[1].toUpperCase(), currency: match[3] };};
 	};
 	return undefined;
+};
+
+/**
+ * IBM i's own length-keyed digit/separator shape for EDTCDE(W) (date fields 5-8 digits long) and
+ * EDTCDE(Y) (3-8 digits) — see "IBM i edit codes in printer files" in the DDS reference. 'n' marks
+ * a digit position; '/' marks where the date separator goes (see dateEditCodePlaceholder).
+ */
+const DATE_EDIT_CODE_PATTERNS: Record<'W' | 'Y', Record<number, string>> = {
+	W: { 5: 'nn/nnn', 6: 'nnnn/nn', 7: 'nnnn/nnn', 8: 'nnnn/nn/nn' },
+	Y: { 3: 'nn/n', 4: 'nn/nn', 5: 'nn/nn/n', 6: 'nn/nn/nn', 7: 'nnn/nn/nn', 8: 'nn/nn/nnnn' }
+};
+
+/**
+ * Approximates an EDTCDE(W)/EDTCDE(Y)-edited field's worst-case printed form, per
+ * DATE_EDIT_CODE_PATTERNS: every 'n' filled with '9' (the same "every digit significant"
+ * convention every other edit-code mask here uses — real run-time output only ever suppresses
+ * leading zeros from this, never grows past it), every '/' replaced with the configured date
+ * separator (see prtf-edit.utils/prtf-edit.date-format.ts — real DDS only actually varies this
+ * from a literal '/' when the field also carries the DATE keyword, driven by the DATSEP job
+ * attribute at print time; this preview applies the same configured separator either way, since
+ * there's no DATFMT/DATSEP tracked here to tell the two cases apart). Undefined when the field's
+ * length falls outside the range either code actually supports — falls back to the plain
+ * placeholder, same as an unresolvable user-defined (5-9) code.
+ */
+function dateEditCodePlaceholder(code: 'W' | 'Y', length: number): string | undefined {
+	const pattern = DATE_EDIT_CODE_PATTERNS[code][length];
+	if (!pattern) {return undefined;};
+	return pattern.replace(/n/g, '9').replace(/\//g, getDateSeparator());
+};
+
+/** Parses EDTWRD('...') — the raw edit-word literal, with a doubled quote ('') unescaped to one
+ * literal quote, same convention as TEXT(). DDS doesn't allow EDTWRD and EDTCDE on the same field,
+ * so editedNumericPlaceholder checks this one first; whichever is actually coded is the only one
+ * that ever matches. */
+export function parseEdtwrd(attributes: PrtfAttribute[] | undefined): string | undefined {
+	for (const attr of attributes ?? []) {
+		const match = attr.value.match(/\bEDTWRD\(\s*'((?:[^']|'')*)'\s*\)/i);
+		if (match) {return match[1].replace(/''/g, "'");};
+	};
+	return undefined;
+};
+
+/**
+ * Approximates an EDTWRD-edited field's worst-case printed form: every blank in the edit word is
+ * a digit position — filled with '9', the same "every digit significant" convention
+ * editedNumericPlaceholder uses for EDTCDE below — and every other character (a literal separator
+ * like '-'/'/', a currency symbol, ...) prints verbatim, at its own fixed spot. An '&' splits the
+ * word into its positive/zero part and its negative part (see "Edit word" in the DDS reference);
+ * only the part before it is used, since there's no real value here to decide which part would
+ * actually print.
+ */
+function edtwrdPlaceholder(rawWord: string): string {
+	return rawWord.split('&')[0].replace(/ /g, '9');
 };
 
 /**
@@ -250,19 +325,28 @@ export function parseEdtcde(attributes: PrtfAttribute[] | undefined): { code: st
  * "fill with 9s at the edited width" convention RLU's own design view uses, rather than the raw
  * O/6 placeholder. Real width can only be smaller than this at run time (zero-suppression,
  * positive values), never larger, so this is the right shape to check for overlap against.
- * Returns undefined when there's no EDTCDE, or it's a user-defined code (5-9) whose editing comes
- * from a CRTEDTD object we have no way to resolve here — those fall back to the plain placeholder.
+ * Returns undefined when there's neither EDTWRD nor EDTCDE, or EDTCDE names a user-defined code
+ * (5-9) whose editing comes from a CRTEDTD object we have no way to resolve here — those fall back
+ * to the plain placeholder.
  * Also reused by fill-constant.ts, unconditionally on the field's own attributes (not gated by any
  * live indicator-simulation state — a "reference width" lookup sizes for the widest an
- * EDTCDE-conditioned field could ever print, the same conservative reasoning as everywhere else
- * this function is used).
+ * edited field could ever print, the same conservative reasoning as everywhere else this function
+ * is used).
  * @param activeAttributes - The field's own attributes, already filtered down to whichever are
- *   currently indicator-active (see isItemDisplayed) — so a conditionally-applied EDTCDE is only
- *   honored when its own condition is currently met.
+ *   currently indicator-active (see isItemDisplayed) — so a conditionally-applied EDTWRD/EDTCDE is
+ *   only honored when its own condition is currently met.
  */
 export function editedNumericPlaceholder(field: PrtfField, activeAttributes: PrtfAttribute[]): string | undefined {
+	const edtwrd = parseEdtwrd(activeAttributes);
+	if (edtwrd !== undefined) {return edtwrdPlaceholder(edtwrd);};
+
 	const edtcde = parseEdtcde(activeAttributes);
 	if (!edtcde) {return undefined;};
+
+	if (edtcde.code === 'W' || edtcde.code === 'Y') {
+		return dateEditCodePlaceholder(edtcde.code, field.length ?? 0);
+	};
+
 	const info = EDIT_CODES[edtcde.code];
 	if (!info) {return undefined;};
 
@@ -270,8 +354,9 @@ export function editedNumericPlaceholder(field: PrtfField, activeAttributes: Prt
 	const decimals = field.decimals ?? 0;
 	const integerDigits = Math.max(length - decimals, 0);
 
-	const integerPart = info.commas ? groupDigits(integerDigits) : '9'.repeat(integerDigits);
-	const decimalPart = decimals > 0 ? '.' + '9'.repeat(decimals) : '';
+	const { thousands, decimal } = getDecimalSeparators();
+	const integerPart = info.commas ? groupDigits(integerDigits, thousands) : '9'.repeat(integerDigits);
+	const decimalPart = decimals > 0 ? decimal + '9'.repeat(decimals) : '';
 	const currencyPart = edtcde.currency ?? '';
 	const prefixSign = info.sign === 'prefixMinus' ? '-' : '';
 	const suffixSign = info.sign === 'suffixCr' ? 'CR' : info.sign === 'suffixMinus' ? '-' : '';
@@ -294,6 +379,24 @@ function stripQuotes(rawName: string): string {
 };
 
 /**
+ * The canonical keyword name (DATE/TIME/PAGNBR) for a constant's raw, non-literal "name" text —
+ * same recognized set as systemKeywordPlaceholder, but returning the keyword itself rather than
+ * its printed placeholder. A non-literal constant's raw text is the whole keyword-zone line it was
+ * coded on, which can carry another keyword right after it on the same line (e.g. "PAGNBR
+ * EDTCDE(Y)" — see systemKeywordPlaceholder's own doc comment); this strips that down to just the
+ * name worth showing in the selection status line. Undefined for anything unrecognized (a
+ * malformed/unrecognized bare keyword) — safer to fall back to the generic "1 constant selected"
+ * there than show a raw, possibly garbled string.
+ */
+function systemKeywordName(rawName: string): string | undefined {
+	const upper = rawName.toUpperCase();
+	if (upper === 'DATE' || upper.startsWith('DATE(') || upper.startsWith('DATE ')) {return 'DATE';};
+	if (upper === 'TIME' || upper.startsWith('TIME(') || upper.startsWith('TIME ')) {return 'TIME';};
+	if (upper === 'PAGNBR' || upper.startsWith('PAGNBR ')) {return 'PAGNBR';};
+	return undefined;
+};
+
+/**
  * PAGNBR's own edited-width placeholder, mirroring editedNumericPlaceholder's "fill with 9s at the
  * edited width" approach for a field — but against a fixed 4-digit unsigned counter (the '9999'
  * baseline systemKeywordPlaceholder already uses for a plain PAGNBR) rather than a field's own
@@ -309,7 +412,7 @@ function editedPagnbrPlaceholder(activeAttributes: PrtfAttribute[]): string | un
 	const info = EDIT_CODES[edtcde.code];
 	if (!info) {return undefined;};
 	const currencyPart = edtcde.currency ?? '';
-	return `${currencyPart}${info.commas ? groupDigits(4) : '9'.repeat(4)}`;
+	return `${currencyPart}${info.commas ? groupDigits(4, getDecimalSeparators().thousands) : '9'.repeat(4)}`;
 };
 
 /**
@@ -323,7 +426,7 @@ function editedPagnbrPlaceholder(activeAttributes: PrtfAttribute[]): string | un
  */
 function constantPlaceholderText(constant: PrtfConstant, activeAttributes: PrtfAttribute[]): string {
 	for (const attr of activeAttributes) {
-		const placeholder = systemKeywordPlaceholder(attr.value);
+		const placeholder = systemKeywordPlaceholder(attr.value, getDateSeparator());
 		if (placeholder) {
 			const isPagnbr = /^PAGNBR\b/i.test(attr.value.trim());
 			return (isPagnbr && editedPagnbrPlaceholder(activeAttributes)) || placeholder;
@@ -438,6 +541,32 @@ export function buildOwnerGrid(rows: number, cols: number, items: PageItem[]): (
 	return grid;
 };
 
+/**
+ * Every item (index into `items`) covering each cell, in `items`' own array order — a superset of
+ * buildOwnerGrid, which only keeps the last one (whichever currently renders/is clickable there).
+ * Two or more fields/constants can legitimately share the same Line/Position in real DDS — most
+ * often each conditioned on a different indicator, so only one of them actually prints at a time —
+ * and buildOwnerGrid's own "last wins" rule would otherwise leave every other one permanently
+ * unreachable by click. Used to mark such a cell (see PageItem.overlay filtering in
+ * renderLineHtml) and let a repeated click on it cycle through the rest of the stack instead of
+ * only ever reselecting the same top item.
+ */
+export function buildStackGrid(rows: number, cols: number, items: PageItem[]): number[][][] {
+	const grid: number[][][] = Array.from({ length: rows }, () => Array.from({ length: cols }, () => []));
+
+	items.forEach((item, index) => {
+		const r = item.row - 1;
+		if (r < 0 || r >= rows) {return;}
+		for (let i = 0; i < item.text.length; i++) {
+			const c = item.col - 1 + i;
+			if (c < 0 || c >= cols) {continue;}
+			grid[r][c].push(index);
+		};
+	});
+
+	return grid;
+};
+
 /** Builds one field's PageItem — shared by the single-record and composed-sequence collectors.
  * `rowOverride`/`forceFlowFlag` let a composed render supply a row from its own running
  * simulation instead of the field's own (isolated-record) resolved `row`. `activeIndicators`
@@ -461,6 +590,7 @@ function buildFieldPageItem(field: PrtfField, rowOverride: number | undefined, f
 	const spacing = itemSpacing(field.attributes, activeIndicators);
 	return {
 		row, col: field.column, text: fieldPlaceholderText(field, activeAttributes), title, lineIndex: field.lineIndex,
+		kind: 'field', name: field.name, length: field.length, decimals: field.decimals,
 		underline: hasUnderline(activeAttributes), flowPositioned,
 		bold: hasHighlight(activeAttributes, recordAttributes), color: getColor(activeAttributes),
 		spacing, flags: itemFlags(field.indicators, field.attributes, spacing)
@@ -478,12 +608,38 @@ function buildConstantPageItem(constant: PrtfConstant, rowOverride: number | und
 		'— right-click to edit SKIPB/SPACEB/SPACEA/SKIPA'
 	].filter(Boolean).join(' ');
 	const spacing = itemSpacing(constant.attributes, activeIndicators);
+	const isLiteral = constant.name === '' || isLiteralConstantValue(constant.name);
 	return {
 		row, col: constant.column, text: constantPlaceholderText(constant, activeAttributes), title, lineIndex: constant.lineIndex,
+		kind: 'constant', name: isLiteral ? undefined : systemKeywordName(constant.name),
 		underline: hasUnderline(activeAttributes), flowPositioned,
 		bold: hasHighlight(activeAttributes, recordAttributes), color: getColor(activeAttributes),
 		spacing, flags: itemFlags(undefined, constant.attributes, spacing)
 	};
+};
+
+/**
+ * One-line summary of whatever's currently selected on the page — name, size and position for a
+ * field, or "1 constant selected" plus position/width for a constant (mirrors dspf-edit's own
+ * preview, which shows the same line above its toolbar's action buttons). Empty when nothing's
+ * selected.
+ */
+function buildSelectionLabel(item: PageItem | undefined): string {
+	if (!item) {return '';};
+	if (item.kind === 'constant') {
+		// A bare system-keyword constant (DATE/TIME/PAGNBR) has a real name worth showing, same as
+		// a field — a plain literal constant doesn't (its DDS "name" is just its own printed text).
+		return item.name
+			? `${item.name} — Pos= ${item.row}, ${item.col}, width ${item.text.length}`
+			: `1 constant selected — Pos= ${item.row}, ${item.col}, width ${item.text.length}`;
+	};
+	if (item.length === undefined) {
+		// A referenced field: its real length lives in the external database field, not readable
+		// here — nothing true to show beyond the generic fallback.
+		return `1 field selected — Pos= ${item.row}, ${item.col}`;
+	};
+	const size = item.decimals ? `${item.length},${item.decimals}` : `${item.length}`;
+	return `${item.name} (${size}) — Pos= ${item.row}, ${item.col}`;
 };
 
 /**
@@ -683,6 +839,36 @@ export function collectComposedPageItems(elements: PrtfElement[], sequence: Sequ
 };
 
 /**
+ * How far down the page an overlay pushes the active record's own row-0 baseline — i.e. the
+ * offset collectPageItemsWithOverlay (below) silently adds to every one of the active record's
+ * flow-mode rows when the overlay record is declared *earlier* in the DDS source (see that
+ * function's own doc comment: whichever record comes first in source order is chained first,
+ * regardless of which one is "active"). Used to translate a page-absolute drop row from a drag
+ * back into the record-local row moveElement/resolveFlowModeMove actually reason about — both
+ * always simulate a record's own flow positions in isolation, starting at row 0, with no notion of
+ * an overlay. Without this, dragging an active flow-mode item horizontally only (no intended row
+ * change) while an earlier-declared overlay is active would still read as a row change of exactly
+ * this offset, and silently write a bogus SPACEB(n) for it.
+ * Zero whenever there's no overlay active, or the active record is the one chained first (its own
+ * row-0 baseline already lands on page row 0/1, no translation needed).
+ */
+export function resolveOverlayRowOffset(
+	elements: PrtfElement[],
+	recordName: string,
+	overlayRecordName: string | undefined
+): number {
+	if (!overlayRecordName) {return 0;};
+	const records = elements.filter((el): el is PrtfRecord => el.kind === 'record');
+	const activeRecord = records.find(r => r.name === recordName);
+	const overlayRecord = records.find(r => r.name === overlayRecordName);
+	if (!activeRecord || !overlayRecord || activeRecord.lineIndex <= overlayRecord.lineIndex) {return 0;};
+
+	// Mirrors collectPageItemsWithOverlay's own firstResult below: the overlay record, chained
+	// first, always renders at the resting indicator state.
+	return positionRecordEntry(elements, overlayRecord, 0, true, new Set<number>()).endLine;
+};
+
+/**
  * Positions the active and overlaid records the way they'd actually print together — via the
  * same chaining positionRecordEntry uses for a composed sequence — so switching which one you're
  * editing doesn't change how they line up. Whichever record is declared *earlier* in the DDS
@@ -787,20 +973,39 @@ function escapeHtml(text: string): string {
 /** Renders one grid row as HTML, wrapping each run of cells owned by the same item in a single
  * <span data-line="..." title="...">, so it's individually hoverable/clickable/highlightable. An
  * overlay item (see PageItem.overlay) gets no `data-line` at all — it's a read-only reference
- * layer, dimmed via CSS and inert to every click/drag handler, which all key off that attribute. */
-function renderLineHtml(charLine: string, ownerLine: (number | undefined)[], items: PageItem[]): string {
+ * layer, dimmed via CSS and inert to every click/drag handler, which all key off that attribute.
+ * @param stackLine - This row's slice of buildStackGrid — every item covering each cell, not just
+ *   the one buildOwnerGrid picked as the winner. Two or more interactive items sharing a cell (see
+ *   buildStackGrid's own doc comment) get a `data-stack` listing all of their line indices, in
+ *   cycle order, plus a `pf-stacked` class the client hovers with a dashed outline — repeated
+ *   clicks there step through the rest of the stack instead of only ever reaching the top one. */
+function renderLineHtml(charLine: string, ownerLine: (number | undefined)[], stackLine: number[][], items: PageItem[]): string {
+	// The overlay's own (read-only, non-interactive) items never participate in the stack — cycling
+	// through them wouldn't select anything real, and they're excluded from data-line for the same
+	// reason.
+	const interactiveStacks = stackLine.map(cellStack => cellStack.filter(idx => !items[idx].overlay));
+
 	let html = '';
 	let i = 0;
 	while (i < charLine.length) {
 		const owner = ownerLine[i];
+		const stack = interactiveStacks[i];
+		const stackKey = stack.join(',');
 		let j = i + 1;
-		while (j < charLine.length && ownerLine[j] === owner) {j++;}
+		while (j < charLine.length && ownerLine[j] === owner && interactiveStacks[j].join(',') === stackKey) {j++;}
 		const segment = escapeHtml(charLine.slice(i, j));
 		if (owner !== undefined) {
 			const item = items[owner];
-			const titleAttr = item.title ? ` title="${escapeHtml(item.title)}"` : '';
+			const isStacked = !item.overlay && stack.length > 1;
+			const stackNames = isStacked ? stack.map(idx => items[idx].name ?? items[idx].text).join(', ') : '';
+			const baseTitle = item.title ?? '';
+			const stackedTitle = isStacked
+				? `${baseTitle ? baseTitle + ' — ' : ''}${stack.length} items share this position (${stackNames}) — click again to cycle through them`
+				: baseTitle;
+			const titleAttr = stackedTitle ? ` title="${escapeHtml(stackedTitle)}"` : '';
 			const flowAttr = item.flowPositioned ? ' data-flow="1"' : '';
 			const lineAttr = item.overlay ? '' : ` data-line="${item.lineIndex}"`;
+			const stackAttr = isStacked ? ` data-stack="${stack.map(idx => items[idx].lineIndex).join(',')}"` : '';
 			const spacingAttr = (!item.overlay && item.spacing && item.spacing.length > 0)
 				? ` data-spacing="${escapeHtml(JSON.stringify(item.spacing)).replace(/"/g, '&quot;')}"`
 				: '';
@@ -815,9 +1020,10 @@ function renderLineHtml(charLine: string, ownerLine: (number | undefined)[], ite
 				'pf-item',
 				item.underline ? 'pf-underline' : '',
 				item.bold ? 'pf-bold' : '',
-				item.overlay ? 'pf-overlay' : ''
+				item.overlay ? 'pf-overlay' : '',
+				isStacked ? 'pf-stacked' : ''
 			].filter(Boolean).join(' ');
-			html += `<span class="${cssClass}"${lineAttr}${flowAttr}${spacingAttr}${flagsAttr}${titleAttr}${styleAttr}>${segment}</span>`;
+			html += `<span class="${cssClass}"${lineAttr}${flowAttr}${stackAttr}${spacingAttr}${flagsAttr}${titleAttr}${styleAttr}>${segment}</span>`;
 		} else {
 			html += segment;
 		};
@@ -982,8 +1188,7 @@ export class RecordPreviewPanel {
 			panel.overlayRecordName = undefined;
 			panel.render();
 		} else {
-			panel.highlightLineIndex = target.targetLineIndex;
-			panel.panel.webview.postMessage({ type: 'highlightLine', lineIndex: target.targetLineIndex ?? null });
+			panel.postHighlight(target.targetLineIndex);
 		};
 	};
 
@@ -1015,6 +1220,14 @@ export class RecordPreviewPanel {
 			case 'toggleFitToScreen':
 				this.fitToScreen = !this.fitToScreen;
 				this.panel.webview.postMessage({ type: 'fitToScreenChanged', active: this.fitToScreen });
+				break;
+			case 'openConfiguration':
+				// Guards the same rule the button's own disabled state already enforces: opening
+				// the Configuration panel "beside" this one would silently drop focus mode instead
+				// of respecting it.
+				if (!this.focusModeActive) {
+					await vscode.commands.executeCommand('prtf-edit.configure-preview');
+				};
 				break;
 			case 'setPageSize':
 				this.rows = clampPageSize(message.rows, DEFAULT_ROWS);
@@ -1068,8 +1281,7 @@ export class RecordPreviewPanel {
 					// the source cursor move above to loop back through a selection-change
 					// listener — the preview no longer follows the cursor at all (only an explicit
 					// tree click or a click inside the preview itself changes what's selected).
-					this.highlightLineIndex = target?.targetLineIndex ?? message.lineIndex;
-					this.panel.webview.postMessage({ type: 'highlightLine', lineIndex: this.highlightLineIndex ?? null });
+					this.postHighlight(target?.targetLineIndex ?? message.lineIndex);
 				};
 				break;
 			case 'deselect':
@@ -1087,7 +1299,16 @@ export class RecordPreviewPanel {
 					// would silently disagree with the row the user is actually dragging within.
 					const liveIndicators = this.indicatorsEnabled ? this.activeIndicators : new Set<number>();
 					const isAttributeActive = (attr: PrtfAttribute) => isItemDisplayed(attr.indicators, liveIndicators);
-					moveElement(message.lineIndex, message.newRow, message.newCol, this.rows, this.cols, Boolean(message.flow), isAttributeActive);
+					// The row the drag landed on is a page-absolute row (see cellFromEvent in the
+					// webview script); an overlay declared earlier in the source can push the active
+					// record's own flow-mode rows down the page by a fixed offset (see
+					// resolveOverlayRowOffset). moveElement/resolveFlowModeMove know nothing about
+					// that — they simulate the record's own flow in isolation from row 0 — so that
+					// offset has to come back out here before the row reaches them.
+					const rowOffset = message.flow
+						? resolveOverlayRowOffset(this.elements, this.recordName, this.overlayRecordName)
+						: 0;
+					moveElement(message.lineIndex, message.newRow - rowOffset, message.newCol, this.rows, this.cols, Boolean(message.flow), isAttributeActive);
 				};
 				break;
 			case 'editSpacing':
@@ -1153,6 +1374,35 @@ export class RecordPreviewPanel {
 		this.panel.webview.postMessage({ type: 'focusModeChanged', active: this.focusModeActive });
 	};
 
+	/** The page items for whatever's currently configured (record/overlay/composed sequence,
+	 * live indicator simulation) — shared between render() (the full HTML) and postHighlight()
+	 * (just the selection status line, without paying for a full re-render on every click). */
+	private collectCurrentItems(): PageItem[] {
+		const composing = this.sequence.length > 0;
+		const liveIndicators = this.indicatorsEnabled ? this.activeIndicators : new Set<number>();
+		// positionRecordEntry lists the overlay's items first — buildPageGrid/buildOwnerGrid
+		// resolve a shared cell to whichever item comes *last* in the array, so the active
+		// record's own content (and its interactivity) always wins where the two overlap.
+		return composing
+			? collectComposedPageItems(this.elements, this.sequence, this.overflowLine, liveIndicators)
+			: this.overlayRecordName
+				? collectPageItemsWithOverlay(this.elements, this.recordName, this.overlayRecordName, liveIndicators, this.overlayRepeat, this.rows)
+				: collectPageItems(this.elements, this.recordName, liveIndicators);
+	};
+
+	/** Updates the selection (highlightLineIndex) and tells the webview about it — both the plain
+	 * highlight and the field/constant summary line above the toolbar buttons (see
+	 * buildSelectionLabel) — without a full re-render, so a click/drag doesn't lose scroll
+	 * position or flicker the page. Only valid to call when the previewed record/overlay/sequence
+	 * haven't changed since the last render (an item's row/col here comes from that same
+	 * configuration) — a change of record calls render() directly instead, which embeds the
+	 * initial selection label itself. */
+	private postHighlight(lineIndex: number | undefined): void {
+		this.highlightLineIndex = lineIndex;
+		const item = lineIndex === undefined ? undefined : this.collectCurrentItems().find(it => it.lineIndex === lineIndex && !it.overlay);
+		this.panel.webview.postMessage({ type: 'highlightLine', lineIndex: lineIndex ?? null, label: buildSelectionLabel(item) });
+	};
+
 	private render(): void {
 		const records = this.elements.filter((e): e is PrtfRecord => e.kind === 'record');
 		if (!records.some(r => r.name === this.recordName) && records.length > 0) {
@@ -1160,15 +1410,7 @@ export class RecordPreviewPanel {
 		};
 
 		const composing = this.sequence.length > 0;
-		const liveIndicators = this.indicatorsEnabled ? this.activeIndicators : new Set<number>();
-		// positionRecordEntry lists the overlay's items first — buildPageGrid/buildOwnerGrid
-		// resolve a shared cell to whichever item comes *last* in the array, so the active
-		// record's own content (and its interactivity) always wins where the two overlap.
-		const items = composing
-			? collectComposedPageItems(this.elements, this.sequence, this.overflowLine, liveIndicators)
-			: this.overlayRecordName
-				? collectPageItemsWithOverlay(this.elements, this.recordName, this.overlayRecordName, liveIndicators, this.overlayRepeat, this.rows)
-				: collectPageItems(this.elements, this.recordName, liveIndicators);
+		const items = this.collectCurrentItems();
 
 		this.panel.title = composing ? 'Preview: (composed)' : `Preview: ${this.recordName || '(no records)'}`;
 		this.panel.webview.html = this.getHtml(records, items);
@@ -1177,6 +1419,18 @@ export class RecordPreviewPanel {
 	private getHtml(records: PrtfRecord[], items: PageItem[]): string {
 		const composing = this.sequence.length > 0;
 		const liveIndicators = this.indicatorsEnabled ? this.activeIndicators : new Set<number>();
+
+		// The selected field/constant's own summary line (name/size/position, or "1 constant
+		// selected"/width for a constant) — see buildSelectionLabel. Computed from `items` (this
+		// same render's own list) so it always agrees with whatever the page just resolved this
+		// item's row/col to, overlay offset and live indicator simulation included.
+		const initialSelectionLabel = buildSelectionLabel(items.find(it => it.lineIndex === this.highlightLineIndex && !it.overlay));
+
+		// AFPDS-only keywords (BOX, PAGSEG, BARCODE, ...) the preview can't draw — see
+		// findUnsupportedAfpdsKeywordsInRecord. Scoped to the single previewed record, same as the
+		// spacing badges just below; a composed sequence can mix several records, so there's no one
+		// record to point the warning at there.
+		const unsupportedAfpdsKeywords = !composing ? findUnsupportedAfpdsKeywordsInRecord(this.elements, this.recordName) : [];
 
 		// Record- and file-level spacing badges (see field/constant's own corner 'S' marker) — shown
 		// only outside composition, where "the current record"/"the file" are still single,
@@ -1246,20 +1500,30 @@ export class RecordPreviewPanel {
 			const pageItems = items.filter(it => (it.page ?? 1) === pageNum);
 			const gridLines = buildPageGrid(this.rows, this.cols, pageItems);
 			const ownerGrid = buildOwnerGrid(this.rows, this.cols, pageItems);
+			const stackGrid = buildStackGrid(this.rows, this.cols, pageItems);
 			const rowsHtml = gridLines
-				.map((line, i) => `<div class="pf-line">${renderLineHtml(line, ownerGrid[i], pageItems)}</div>`)
+				.map((line, i) => `<div class="pf-line">${renderLineHtml(line, ownerGrid[i], stackGrid[i], pageItems)}</div>`)
 				.join('');
 			const label = showPageLabels ? `<div class="pf-page-label">Page ${pageNum}</div>` : '';
-			const recordBadge = (pageNum === (pageNumbers[0] ?? 1) && recordSpacingEntries.length > 0)
-				? `<button type="button" id="recordSpacingBtn" class="spacing-item-btn pf-record-spacing-badge${anySpacingActive(recordSpacingEntries) ? ' active' : ''}" title="${escapeHtml(spacingTitle('Record', recordSpacingEntries))}">S</button>`
-				: '';
 			return `<div class="pf-page-group">${label}<div class="pf-page-grid">` +
 				`<div class="pf-ruler-corner"></div>` +
 				`<div class="pf-ruler-line">${rulerLineHtml}</div>` +
 				`<div class="pf-gutter">${gutterCellsHtml}</div>` +
-				`<div class="page">${recordBadge}${rowsHtml}</div>` +
+				`<div class="page">${rowsHtml}</div>` +
 				`</div></div>`;
 		}).join('');
+
+		// The current record's own spacing badge — a sibling of #pageScaleBox (not nested inside
+		// it, or its own "Fit to Screen" CSS transform would distort/break position: sticky below)
+		// in .page-wrapper's own flex row, so it keeps its natural place to the left of the sheet
+		// while staying pinned near the top of the visible area as the page scrolls underneath it
+		// — rather than the page's own top-left corner scrolling away with the rest of the content
+		// (see .pf-record-spacing-badge). Once per record, not per page, since a composed sequence
+		// (where recordSpacingEntries is always empty — see its own computation above) is the only
+		// case with more than one.
+		const recordBadgeHtml = recordSpacingEntries.length > 0
+			? `<button type="button" id="recordSpacingBtn" class="spacing-item-btn pf-record-spacing-badge${anySpacingActive(recordSpacingEntries) ? ' active' : ''}" title="${escapeHtml(spacingTitle('Record', recordSpacingEntries))}">S</button>`
+			: '';
 
 		return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -1269,23 +1533,48 @@ export class RecordPreviewPanel {
 	* {
 		box-sizing: border-box;
 	}
+	html, body {
+		height: 100%;
+	}
+	/* A column: the toolbar's own natural height on top, .page-wrapper taking the rest — rather
+	   than the old "body scrolls as a whole, toolbar stickies to the top of it" model, where the
+	   record-level spacing badge (pinned to the *page's* own top-left corner) scrolled away with
+	   the rest of the page and ended up sliding behind/over the toolbar. Now only .page-wrapper
+	   itself scrolls, so a sticky element inside it (see .pf-record-spacing-badge) can stay pinned
+	   near the top of the visible page without ever reaching the toolbar in the first place. */
 	body {
+		display: flex;
+		flex-direction: column;
 		font-family: sans-serif;
 		background: #ffffff;
 		color: #000000;
 		padding: 0;
 		margin: 0;
 	}
-	/* One sticky band (like dspf-edit's own toolbar) containing several stacked rows — grouped by
-	   purpose the same way: an info/Focus row, a "what am I looking at" selectors row, an actions
-	   row, and (only while composing) the sequence editor row. */
+	/* Like dspf-edit's own toolbar: several stacked rows, grouped by purpose — an info/Focus row, a
+	   "what am I looking at" selectors row, an actions row, and (only while composing) the
+	   sequence editor row. Always visible without needing position: sticky — it's a fixed-height
+	   flex item above .page-wrapper (the only thing that actually scrolls), not part of the
+	   scrolling content itself. */
 	#toolbarContainer {
-		position: sticky;
-		top: 0;
+		flex-shrink: 0;
 		background: #f3f3f3;
 		border-bottom: 1px solid #ccc;
 		padding: 8px 12px;
 		z-index: 10;
+	}
+	/* Mirrors RLU's own "Formato de Registro AFPDS" notice — this preview can't draw a BOX/LINE/
+	   PAGSEG/etc., so it says so instead of silently showing an incomplete page as if it were the
+	   whole picture. Unlike RLU, the rest of the record (whatever fields/constants the preview
+	   *does* understand) still renders below it. */
+	#afpdsWarning {
+		background: #fff3cd;
+		color: #856404;
+		border: 1px solid #ffeeba;
+		border-radius: 3px;
+		padding: 6px 10px;
+		margin-bottom: 8px;
+		font-size: 12px;
 	}
 	.toolbar-row {
 		display: flex;
@@ -1307,6 +1596,9 @@ export class RecordPreviewPanel {
 	}
 	#sizeLabel {
 		font-weight: 600;
+		color: #000000;
+	}
+	#selectionLabel {
 		color: #000000;
 	}
 	.toolbar-row select, .toolbar-row input {
@@ -1402,9 +1694,31 @@ export class RecordPreviewPanel {
 		gap: 2px;
 		white-space: nowrap;
 	}
+	/* The only element that actually scrolls (see the body/#toolbarContainer comments above) — a
+	   plain block, deliberately *not* the flex row itself (see .pf-page-flex-row): its own height
+	   is bounded to whatever fits the viewport (that's what makes it scroll at all), and a flex
+	   container's align-items: stretch sizes children to *that* bounded box, not to an overflowing
+	   child's full content height — sizing the badge's own gutter that way left it only as tall as
+	   one screenful, so it lost its sticky footing and started scrolling away past that point. The
+	   flex row lives one level deeper, in a child with a natural (unbounded) height instead. */
 	.page-wrapper {
+		flex: 1;
+		min-height: 0;
 		padding: 16px;
 		overflow: auto;
+	}
+	/* The record-level spacing badge's gutter sits beside the page, in a row exactly as tall as the
+	   page itself (see .page-wrapper's own comment on why this can't be .page-wrapper directly). */
+	.pf-page-flex-row {
+		display: flex;
+	}
+	/* Just wide enough for the "S" badge — stretches to the same height as its tall sibling
+	   (#pageScaleBox, by default flex align-items: stretch) purely so the badge's own sticky
+	   positioning below has that whole height to stay pinned within as the page scrolls. */
+	.pf-record-spacing-gutter {
+		flex-shrink: 0;
+		width: 24px;
+		margin-right: 8px;
 	}
 	.page {
 		position: relative;
@@ -1520,6 +1834,23 @@ export class RecordPreviewPanel {
 		outline: 2px solid #337aff;
 		outline-offset: -1px;
 	}
+	/* The selection square turns green instead of blue when what's selected shares its cell with
+	   other items (see pf-stacked) — a reminder that this square doesn't own the whole cell, and
+	   clicking it again cycles to whichever else is stacked there rather than just reselecting it. */
+	.pf-item.pf-highlight.pf-stacked {
+		outline-color: #2e7d32;
+	}
+	/* Two or more fields/constants sharing the same Line/Position (typically each conditioned on a
+	   different indicator, so only one ever actually prints) — see buildStackGrid. Only the
+	   top-of-stack one is ever visible/clickable here (there's no way to draw more than one
+	   character per cell), so this dashed outline is the only hint the rest exist at all; the title
+	   tooltip names them, and clicking again cycles to the next one. Dashed rather than
+	   .pf-highlight's solid outline so the two read as distinct cues if the stacked item also
+	   happens to be the current selection. */
+	.pf-item.pf-stacked:hover {
+		outline: 1px dashed #b36b00;
+		outline-offset: -1px;
+	}
 	.pf-ghost {
 		position: fixed;
 		background: rgba(51, 122, 255, 0.25);
@@ -1550,22 +1881,27 @@ export class RecordPreviewPanel {
 		color: #ffffff;
 		border-color: #337aff;
 	}
-	/* The current record's own spacing badge, pinned to its page's top-left corner — same 'S'
-	   language as a field/constant's own corner marker, just at page scale and clickable (a record
-	   isn't one grid cell, so it has no natural in-page spot the way a field/constant does). */
+	/* The current record's own spacing badge — same 'S' language as a field/constant's own corner
+	   marker, just at page scale and clickable (a record isn't one grid cell, so it has no natural
+	   in-page spot the way a field/constant does). Sticky, not the page's own top-left corner:
+	   pinned near the top of .page-wrapper's visible scroll area (its own gutter is tall enough —
+	   see .pf-record-spacing-gutter — to give it room to travel) rather than the page's own row 1,
+	   which would otherwise scroll out of view — and behind the toolbar — the moment you scroll
+	   down to a field further down a tall page. */
 	.pf-record-spacing-badge {
-		position: absolute;
-		top: -9px;
-		left: -1px;
+		position: sticky;
+		top: 8px;
 		z-index: 10;
 	}
 </style>
 </head>
 <body>
 	<div id="toolbarContainer">
+		${unsupportedAfpdsKeywords.length > 0 ? `<div id="afpdsWarning" title="Not drawn by this preview — check the source for what these actually produce">⚠️ This record uses AFPDS keyword(s) not supported by the preview yet: ${escapeHtml(unsupportedAfpdsKeywords.join(', '))}. What's shown below may be incomplete.</div>` : ''}
 		<div id="toolbarRow1" class="toolbar-row">
-			<button id="focusModeBtn" title="Hide the source code editor to focus on the preview (tree view stays visible)">${this.focusModeActive ? '🗗 Show code' : '🗖 Focus'}</button>
+			<button id="focusModeBtn" class="${this.focusModeActive ? 'active' : ''}" title="Hide the source code editor to focus on the preview (tree view stays visible)">${this.focusModeActive ? '🗗 Show code' : '🗖 Focus'}</button>
 			<button id="fitScreenBtn" class="${this.fitToScreen ? 'active' : ''}" title="Scale the whole page to fit the visible area, so nothing is hidden below the fold">🔍 Fit to Screen</button>
+			<button id="configBtn" ${this.focusModeActive ? 'disabled' : ''} title="Configure the preview (decimal format, date separator)">⚙ Configuration</button>
 			${fileSpacingEntries.length > 0 ? `<button type="button" id="fileSpacingBtn" class="spacing-item-btn${anySpacingActive(fileSpacingEntries) ? ' active' : ''}" title="${escapeHtml(spacingTitle('File', fileSpacingEntries))}">📄 S</button>` : ''}
 		</div>
 		<div id="toolbarRow2" class="toolbar-row">
@@ -1585,6 +1921,9 @@ export class RecordPreviewPanel {
 					<input type="checkbox" id="overlayRepeatToggle" ${this.overlayRepeat ? 'checked' : ''} ${this.overlayRecordName ? '' : 'disabled'}> 🔁 Repeat
 				</label>
 			</label>
+		</div>
+		<div id="selectionLabelRow" class="toolbar-row" style="${initialSelectionLabel ? '' : 'display:none'}">
+			<span id="selectionLabel">${escapeHtml(initialSelectionLabel)}</span>
 		</div>
 		<div id="toolbarRow3" class="toolbar-row">
 			<button id="addFieldBtn" title="Click, then click a point on the page to place a new field there">+ Field</button>
@@ -1612,8 +1951,11 @@ export class RecordPreviewPanel {
 		</div>
 	</div>
 	<div class="page-wrapper">
-		<div id="pageScaleBox">
-			<div id="page" class="${this.showRuler ? 'pf-ruler-on' : ''}">${pagesHtml}</div>
+		<div class="pf-page-flex-row">
+			${recordBadgeHtml ? `<div class="pf-record-spacing-gutter">${recordBadgeHtml}</div>` : ''}
+			<div id="pageScaleBox">
+				<div id="page" class="${this.showRuler ? 'pf-ruler-on' : ''}">${pagesHtml}</div>
+			</div>
 		</div>
 	</div>
 	<script>
@@ -1626,6 +1968,9 @@ export class RecordPreviewPanel {
 		});
 		document.getElementById('fitScreenBtn').addEventListener('click', () => {
 			vscode.postMessage({ type: 'toggleFitToScreen' });
+		});
+		document.getElementById('configBtn').addEventListener('click', () => {
+			vscode.postMessage({ type: 'openConfiguration' });
 		});
 		document.getElementById('overlayRepeatToggle').addEventListener('change', e => {
 			vscode.postMessage({ type: 'setOverlayRepeat', enabled: e.target.checked });
@@ -1660,6 +2005,8 @@ export class RecordPreviewPanel {
 		const deleteItemBtn = document.getElementById('deleteItemBtn');
 		const attributesBtn = document.getElementById('attributesBtn');
 		const spacingBtn = document.getElementById('spacingBtn');
+		const selectionLabelRow = document.getElementById('selectionLabelRow');
+		const selectionLabel = document.getElementById('selectionLabel');
 		let currentHighlightLine = ${JSON.stringify(this.highlightLineIndex ?? null)};
 		function refreshSelectionButtonsState() {
 			const disabled = composeToggle.checked || currentHighlightLine === null || currentHighlightLine === undefined;
@@ -1868,6 +2215,10 @@ export class RecordPreviewPanel {
 				// A flow-positioned item (SPACEB/SPACEA/SKIPB/SKIPA) has no Line entry to rewrite —
 				// the server adjusts its own SPACEB instead when this is set (see moveElement).
 				flow: el.dataset.flow === '1',
+				// Two or more items sharing this exact cell (see buildStackGrid/pf-stacked) — a
+				// plain click (not a drag) below cycles to the next one in this list instead of
+				// just reselecting whichever is currently on top, if that's already selected.
+				stack: el.dataset.stack ? el.dataset.stack.split(',').map(Number) : null,
 				width: el.textContent.length,
 				grabOffsetX: e.clientX - rect.left,
 				grabOffsetY: e.clientY - rect.top,
@@ -1924,7 +2275,16 @@ export class RecordPreviewPanel {
 					vscode.postMessage({ type: 'moveItem', lineIndex: dragState.lineIndex, newRow: dragState.row, newCol: dragState.col, flow: dragState.flow });
 				};
 			} else if (shouldApply) {
-				vscode.postMessage({ type: 'gotoLine', lineIndex: dragState.lineIndex });
+				// Clicking an already-selected stacked cell again steps to the next item sharing
+				// it, wrapping around — the only way to reach anything but the top-of-stack one
+				// (see pf-stacked). Clicking a stacked cell that isn't already selected falls
+				// through to the normal "select whatever's on top" behavior.
+				let targetLine = dragState.lineIndex;
+				if (dragState.stack && dragState.stack.length > 1) {
+					const stackPos = dragState.stack.indexOf(currentHighlightLine);
+					if (stackPos !== -1) {targetLine = dragState.stack[(stackPos + 1) % dragState.stack.length];};
+				};
+				vscode.postMessage({ type: 'gotoLine', lineIndex: targetLine });
 			};
 			dragState = null;
 		};
@@ -2000,21 +2360,37 @@ export class RecordPreviewPanel {
 		window.addEventListener('resize', () => { if (fitToScreenActive) applyFitToScreen(); });
 		applyFitToScreen();
 
-		function applyHighlight(lineIndex) {
+		function applyHighlight(lineIndex, label) {
 			document.querySelectorAll('.pf-highlight').forEach(el => el.classList.remove('pf-highlight'));
 			currentHighlightLine = lineIndex;
 			refreshSelectionButtonsState();
 			if (lineIndex !== null && lineIndex !== undefined) {
-				document.querySelectorAll('[data-line="' + lineIndex + '"]').forEach(el => el.classList.add('pf-highlight'));
+				// A stacked cell only ever has one <span> in the DOM (see pf-stacked) — its own
+				// data-line is whichever item is currently on top, not necessarily the one just
+				// selected by cycling. Fall back to matching it via data-stack instead, so the
+				// highlight square still lands on the right cell even for a non-top pick.
+				const direct = document.querySelectorAll('[data-line="' + lineIndex + '"]');
+				if (direct.length > 0) {
+					direct.forEach(el => el.classList.add('pf-highlight'));
+				} else {
+					document.querySelectorAll('[data-stack]').forEach(el => {
+						if (el.dataset.stack.split(',').map(Number).includes(lineIndex)) {el.classList.add('pf-highlight');};
+					});
+				};
 			};
 			renderSpacingRow(lineIndex);
+			selectionLabel.textContent = label || '';
+			selectionLabelRow.style.display = label ? '' : 'none';
 		};
 		window.addEventListener('message', event => {
-			if (event.data.type === 'highlightLine') applyHighlight(event.data.lineIndex);
+			if (event.data.type === 'highlightLine') applyHighlight(event.data.lineIndex, event.data.label);
 			if (event.data.type === 'focusModeChanged') {
 				const focusModeBtn = document.getElementById('focusModeBtn');
 				focusModeBtn.textContent = event.data.active ? '🗗 Show code' : '🗖 Focus';
 				focusModeBtn.classList.toggle('active', event.data.active);
+				// Opening Configuration "beside" this panel while focus mode has maximized its
+				// editor group would silently break out of that maximized layout.
+				document.getElementById('configBtn').disabled = event.data.active;
 			};
 			if (event.data.type === 'rulerChanged') {
 				document.getElementById('page').classList.toggle('pf-ruler-on', event.data.active);
@@ -2026,7 +2402,7 @@ export class RecordPreviewPanel {
 				applyFitToScreen();
 			};
 		});
-		applyHighlight(${JSON.stringify(this.highlightLineIndex ?? null)});
+		applyHighlight(${JSON.stringify(this.highlightLineIndex ?? null)}, ${JSON.stringify(initialSelectionLabel)});
 	</script>
 </body>
 </html>`;

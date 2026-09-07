@@ -8,7 +8,7 @@
     "url": "https://www.linkedin.com/in/christianlarsenvalverde/"
   },
   "publisher": "ChristianLarsen",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/christianlarsen/prtf-edit"
@@ -120,6 +120,10 @@
       {
         "command": "prtf-edit.delete-element",
         "title": "Delete Field/Constant"
+      },
+      {
+        "command": "prtf-edit.configure-preview",
+        "title": "Configure Preview..."
       }
     ],
     "menus": {
