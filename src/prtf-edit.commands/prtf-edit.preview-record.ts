@@ -19,8 +19,18 @@ export function previewRecord(node: PrtfNode): void {
 	RecordPreviewPanel.createOrShow(node.source.name, elements);
 };
 
+/** Same as previewRecord, but invoked by the "Preview Page Layout" CodeLens (see
+ * prtf-edit.record-codelens-provider.ts) with just the record's name, rather than a tree node. */
+export function previewRecordByName(recordName: string): void {
+	if (!ExtensionState.lastPrtfDocument) {return;}
+
+	const elements = parseDocument(ExtensionState.lastPrtfDocument.getText());
+	RecordPreviewPanel.createOrShow(recordName, elements);
+};
+
 export function registerPreviewRecordCommand(context: vscode.ExtensionContext): void {
 	context.subscriptions.push(
-		vscode.commands.registerCommand('prtf-edit.preview-record', previewRecord)
+		vscode.commands.registerCommand('prtf-edit.preview-record', previewRecord),
+		vscode.commands.registerCommand('prtf-edit.preview-record-by-name', previewRecordByName)
 	);
 };

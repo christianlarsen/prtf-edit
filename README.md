@@ -16,11 +16,11 @@ PRTF-edit doesn't replace your compiler — it closes the gap between writing DD
 - A dedicated **PRTF Structure** view in the Activity Bar lists the file itself, every record format, field, and constant in the open source, grouped and kept in sync automatically as you type.
 - The **File** node shows the source member's own name and its file-level attributes.
 - Click any item to jump straight to its line in the source.
-- Records, fields, and constants each show a short summary right in the tree (position, indicators, ...).
+- Records, fields, and constants each show a short summary right in the tree (position, indicators, ...), with a distinct icon per kind so the structure reads at a glance.
 - Right-click menus let you create, rename, copy, and delete records, fields, and constants without hand-editing the source (see **Editing from the tree** below).
 
 ### Page-layout preview
-- Click the preview icon on a record to open a print-style simulation of its layout, rendered on a character grid at the page size you choose (rows × columns, default 66×132).
+- Click the preview icon on a record — in the tree, or the **"Preview (PRTF-edit)"** CodeLens above the record's own `A` spec line in the source (shown next to any other extension's own "Preview" CodeLens on the same line, so both stay available) — to open a print-style simulation of its layout, rendered on a character grid at the page size you choose (rows × columns, default 66×132).
 - Fields show as `O` or `6` placeholders (the familiar SDA/DFU convention) — hover one for its name and description. A numeric field with an edit code (`EDTCDE`) or an edit word (`EDTWRD`) is shown at its worst-case edited width (commas, sign, separators), not just its raw length — including the date-editing codes `EDTCDE(W)`/`EDTCDE(Y)`.
 - `COLOR`, `HIGHLIGHT`, and `UNDERLINE` render visually, at both record and field level.
 - Drag a field or constant anywhere on the page to reposition it — the preview understands both records positioned with an explicit Line/Position and "flow" records positioned via `SKIPB`/`SPACEB`/`SPACEA`/`SKIPA`, adjusting whichever applies, including a file-level `SKIPB`/`SKIPA` cascading into every record the way real DDS applies it.
@@ -89,15 +89,11 @@ This extension is under active development — some DDS keywords aren't supporte
 See the full changelog [here](./CHANGELOG.md).
 
 ### Latest
-**0.3.0** - 2026-09-07
-- Added a "⚙ Configuration" panel: decimal/thousands-separator and date-separator conventions (US/European), settable by hand, fetched from a connected IBM i, or reset to default.
-- Added preview support for `EDTWRD()` and for the `EDTCDE(W)`/`EDTCDE(Y)` date-editing codes — both previously ignored, showing as a plain unedited placeholder.
-- Added a selection status line above the preview's action buttons (field name/size/position, or constant position/width).
-- Added a warning banner when the previewed record uses an AFPDS-only keyword the preview can't draw yet (`BOX`, `PAGSEG`, `BARCODE`, ...), instead of silently rendering it as if that content weren't there.
-- Added a dashed-outline hover cue and click-to-cycle for fields/constants sharing the exact same position, so none of them are silently unreachable behind whichever one renders on top.
-- Fixed a spurious `SPACEB` change when dragging a field/constant horizontally only, while an "Overlay" declared earlier in the source was active.
-- Fixed the record-level spacing "S" badge scrolling away (and behind the toolbar) on a tall page instead of staying visible.
-- Fixed the "🗖 Focus"/"🗗 Show code" button losing its blue "active" highlight (label stayed correct) on a full re-render while focus mode was on, e.g. after switching to a different record.
+**0.4.0** - 2026-09-13
+- Added a **"Preview (PRTF-edit)" CodeLens** above every record definition, so the preview can be opened straight from the source without switching to the Definition tree first — shown next to any other extension's own "Preview" CodeLens on the same line.
+- The Definition tree now uses VS Code's own codicon set for its icons instead of emoji glyphs, for a more consistent look across themes and platforms.
+- An "Attributes" or "Indicators" group with nothing in it no longer shows up as an empty row in the tree.
+- The "Indicators..." editor now shows each existing OR'd condition as its own row, with edit/trash buttons right on it, instead of a generic "what do you want to do?" menu first.
 
 ---
 

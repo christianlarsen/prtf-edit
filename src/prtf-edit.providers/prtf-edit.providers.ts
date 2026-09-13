@@ -30,6 +30,9 @@ interface GroupNode {
 	label: string;
 	recordName?: string;
 	itemLineIndex?: number;
+	/** Set only on an individual indicator leaf under an "Indicators" group, so its icon can reflect
+	 * ON/OFF state — left undefined for every other group (attrs/fields/records/placeholder). */
+	indicatorActive?: boolean;
 	children: PrtfNodeSource[];
 };
 
@@ -43,13 +46,12 @@ type PrtfNodeSource = PrtfElement | GroupNode;
  * items for `TreeView.reveal()`.
  */
 /** Registered in extension.ts to navigate the source editor to the clicked node's line, and bound
- * as every navigable node's `TreeItem.command` below (same pattern as dspf-edit's own tree —
- * `ddsEdit.goToLine`). Binding a command here is also what changes VS Code's default single-click
- * behavior: a collapsible tree item with *no* bound command toggles expand/collapse on a plain
- * label click, in addition to selecting it. With a command bound, VS Code runs it instead and
- * leaves the item's expand state alone — so clicking a record (to select it / show its preview)
- * no longer also forcibly unfolds it. Expanding is still available via the item's own disclosure
- * arrow, or "Expand All". */
+ * as every navigable node's `TreeItem.command` below. Binding a command here is also what changes
+ * VS Code's default single-click behavior: a collapsible tree item with *no* bound command toggles
+ * expand/collapse on a plain label click, in addition to selecting it. With a command bound, VS
+ * Code runs it instead and leaves the item's expand state alone — so clicking a record (to select
+ * it / show its preview) no longer also forcibly unfolds it. Expanding is still available via the
+ * item's own disclosure arrow, or "Expand All". */
 export const TREE_NODE_CLICK_COMMAND = 'prtf-edit.internal.treeNodeClicked';
 
 export class PrtfNode extends vscode.TreeItem {
@@ -61,14 +63,51 @@ export class PrtfNode extends vscode.TreeItem {
 	) {
 		super(label, collapsibleState);
 		this.id = id;
+		this.iconPath = getIconPath(source);
 		// A synthetic group node's contextValue is qualified by its role (e.g. "treeGroup:records")
 		// rather than the bare "treeGroup" every group shares — needed so a menu's `when` clause can
-		// target one specific group (the "📂 Records" row's own inline "+" icon) without also
-		// matching every other group (Attributes, Indicators, ...).
+		// target one specific group (the "Records" row's own inline "+" icon) without also matching
+		// every other group (Attributes, Indicators, ...).
 		this.contextValue = source.kind === 'treeGroup' ? `treeGroup:${source.role}` : source.kind;
 		if (collapsibleState !== vscode.TreeItemCollapsibleState.None && source.kind !== 'treeGroup') {
 			this.command = { command: TREE_NODE_CLICK_COMMAND, title: 'Select', arguments: [this] };
 		};
+	};
+};
+
+/**
+ * Picks a codicon (VS Code's built-in ThemeIcon set) per node kind, so the tree renders
+ * consistently across themes/platforms instead of relying on emoji glyph rendering.
+ */
+function getIconPath(source: PrtfNodeSource): vscode.ThemeIcon | undefined {
+	if (source.kind === 'treeGroup') {
+		if (source.indicatorActive !== undefined) {
+			return source.indicatorActive
+				? new vscode.ThemeIcon('circle-filled', new vscode.ThemeColor('charts.green'))
+				: new vscode.ThemeIcon('circle-outline');
+		};
+		switch (source.role) {
+			case 'fileAttrs':
+			case 'recordAttrs':
+			case 'itemAttrs':
+				return new vscode.ThemeIcon('settings-gear');
+			case 'itemIndicators':
+				return new vscode.ThemeIcon('symbol-boolean');
+			case 'recordFields':
+				return new vscode.ThemeIcon('list-unordered');
+			case 'records':
+				return new vscode.ThemeIcon('list-tree');
+			default:
+				return undefined;
+		};
+	};
+	switch (source.kind) {
+		case 'file': return new vscode.ThemeIcon('file-code');
+		case 'record': return new vscode.ThemeIcon('window');
+		case 'field': return new vscode.ThemeIcon('symbol-field');
+		case 'constant': return new vscode.ThemeIcon('symbol-constant');
+		case 'attribute': return new vscode.ThemeIcon('settings-gear');
+		default: return undefined;
 	};
 };
 
@@ -94,6 +133,12 @@ export class PrtfTreeProvider implements vscode.TreeDataProvider<PrtfNode> {
 	setElements(elements: PrtfElement[]) {
 		this.elements = elements;
 		this.refresh();
+	};
+
+	/** The flat, last-parsed element list backing the tree — used by the record CodeLens provider
+	 * to find every record's line without duplicating the tree's own parsed state. */
+	getElements(): PrtfElement[] {
+		return this.elements;
 	};
 
 	refresh(): void {
@@ -189,7 +234,7 @@ export class PrtfTreeProvider implements vscode.TreeDataProvider<PrtfNode> {
 
 	private recordsRootGroup(): PrtfNode {
 		const records = this.elements.filter((e): e is PrtfRecord => e.kind === 'record');
-		const group: GroupNode = { kind: 'treeGroup', role: 'records', id: 'grp:records', label: `📂 Records (${records.length})`, children: records };
+		const group: GroupNode = { kind: 'treeGroup', role: 'records', id: 'grp:records', label: `Records (${records.length})`, children: records };
 		// Kept as a real (if empty/unexpandable) node even with zero records, rather than a plain
 		// placeholder text — it's what now carries the "+" inline icon (see PrtfNode's contextValue),
 		// so a brand-new file with no records yet still has something to click to create the first one.
@@ -221,11 +266,10 @@ export class PrtfTreeProvider implements vscode.TreeDataProvider<PrtfNode> {
 		return nodes;
 	};
 
-	/** The "📂 File (...)" root node — a real node (not a synthetic group) wrapping the parser's
-	 * own PrtfFile, same shape as recordNode/record, so its "Edit Attributes..." context menu can
-	 * target a plain `viewItem == file`. Always Collapsed (matching dspf-edit's own file node,
-	 * which the tree of every other DDS-editing member of this family already uses) — it always has
-	 * exactly one child (the Attributes group below), whether or not that group itself is empty. */
+	/** The "File (...)" root node — a real node (not a synthetic group) wrapping the parser's own
+	 * PrtfFile, same shape as recordNode/record, so its "Edit Attributes..." context menu can target
+	 * a plain `viewItem == file`. Always Collapsed — it always has exactly one child (the Attributes
+	 * group below), whether or not that group itself is empty. */
 	private fileRootNode(): PrtfNode | undefined {
 		const file = this.elements.find((e): e is PrtfFile => e.kind === 'file');
 		if (!file) {return undefined;}
@@ -234,21 +278,27 @@ export class PrtfTreeProvider implements vscode.TreeDataProvider<PrtfNode> {
 		return fileNode(file, fileName);
 	};
 
+	// An empty group (no attributes/indicators/fields) is left out entirely rather than shown as an
+	// unexpandable row — the "Records" root group is the one deliberate exception (see its own
+	// comment), since it doubles as the "+" button for a brand-new file with no records yet.
+
 	private getFileChildren(file: PrtfFile): PrtfNode[] {
-		return [fileAttrsGroupNode(file)];
+		const attributes = file.attributes ?? [];
+		return attributes.length > 0 ? [fileAttrsGroupNode(file)] : [];
 	};
 
 	private getRecordChildren(record: PrtfRecord): PrtfNode[] {
 		const nodes: PrtfNode[] = [];
-		nodes.push(recordAttrsGroupNode(record));
-		nodes.push(this.recordFieldsGroup(record));
+		const attributes = record.attributes ?? [];
+		if (attributes.length > 0) {nodes.push(recordAttrsGroupNode(record));};
+		if (this.fieldsAndConstantsOf(record.name).length > 0) {nodes.push(this.recordFieldsGroup(record));};
 		return nodes;
 	};
 
 	private getFieldOrConstantChildren(element: PrtfField | PrtfConstant): PrtfNode[] {
 		const nodes: PrtfNode[] = [];
-		nodes.push(itemIndicatorsGroupNode(element));
-		nodes.push(itemAttrsGroupNode(element));
+		if ((element.indicators?.length ?? 0) > 0) {nodes.push(itemIndicatorsGroupNode(element));};
+		if ((element.attributes?.length ?? 0) > 0) {nodes.push(itemAttrsGroupNode(element));};
 		return nodes;
 	};
 
@@ -274,7 +324,7 @@ export class PrtfTreeProvider implements vscode.TreeDataProvider<PrtfNode> {
 		};
 		// 'attribute' (leaf, e.g. inside an Attributes group)
 		const attr = source as PrtfAttribute;
-		return new PrtfNode(`attr:${attr.lineIndex}:${attr.value}`, `⚙️ ${attr.value}`, vscode.TreeItemCollapsibleState.None, attr);
+		return new PrtfNode(`attr:${attr.lineIndex}:${attr.value}`, attr.value, vscode.TreeItemCollapsibleState.None, attr);
 	};
 };
 
@@ -287,27 +337,27 @@ function placeholderNode(message: string): PrtfNode {
 };
 
 function fileNode(file: PrtfFile, fileName: string): PrtfNode {
-	return new PrtfNode('file', `📂 File (${fileName})`, vscode.TreeItemCollapsibleState.Collapsed, file);
+	return new PrtfNode('file', `File (${fileName})`, vscode.TreeItemCollapsibleState.Collapsed, file);
 };
 
 function fileAttrsGroupNode(file: PrtfFile): PrtfNode {
 	const attributes = file.attributes ?? [];
 	const group: GroupNode = {
 		kind: 'treeGroup', role: 'fileAttrs', id: 'grp:file:attrs',
-		label: `⚙️ Attributes (${attributes.length})`, children: attributes
+		label: `Attributes (${attributes.length})`, children: attributes
 	};
 	return wrapGroup(group, attributes.length > 0 ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
 };
 
 function recordNode(record: PrtfRecord): PrtfNode {
-	return new PrtfNode(`rec:${record.name}`, `📄 ${record.name}`, vscode.TreeItemCollapsibleState.Collapsed, record);
+	return new PrtfNode(`rec:${record.name}`, record.name, vscode.TreeItemCollapsibleState.Collapsed, record);
 };
 
 function fieldNode(field: PrtfField): PrtfNode {
 	const collapsible = (field.indicators?.length ?? 0) > 0 || (field.attributes?.length ?? 0) > 0
 		? vscode.TreeItemCollapsibleState.Collapsed
 		: vscode.TreeItemCollapsibleState.None;
-	const node = new PrtfNode(`fld:${field.recordname}:${field.lineIndex}`, `🔤 ${field.name}`, collapsible, field);
+	const node = new PrtfNode(`fld:${field.recordname}:${field.lineIndex}`, field.name, collapsible, field);
 	node.description = describePrtfField(field);
 	node.tooltip = indicatorTooltip(field.indicators);
 	return node;
@@ -317,7 +367,7 @@ function constantNode(constant: PrtfConstant): PrtfNode {
 	const collapsible = (constant.indicators?.length ?? 0) > 0 || (constant.attributes?.length ?? 0) > 0
 		? vscode.TreeItemCollapsibleState.Collapsed
 		: vscode.TreeItemCollapsibleState.None;
-	const node = new PrtfNode(`cst:${constant.recordname}:${constant.lineIndex}`, `💡 ${constant.name}`, collapsible, constant);
+	const node = new PrtfNode(`cst:${constant.recordname}:${constant.lineIndex}`, constant.name, collapsible, constant);
 	node.description = describePrtfConstant(constant);
 	node.tooltip = indicatorTooltip(constant.indicators);
 	return node;
@@ -327,7 +377,7 @@ function recordAttrsGroupNode(record: PrtfRecord): PrtfNode {
 	const attributes = record.attributes ?? [];
 	const group: GroupNode = {
 		kind: 'treeGroup', role: 'recordAttrs', id: `grp:rec:${record.name}:attrs`,
-		label: `⚙️ Attributes (${attributes.length})`, recordName: record.name, children: attributes
+		label: `Attributes (${attributes.length})`, recordName: record.name, children: attributes
 	};
 	return wrapGroup(group, attributes.length > 0 ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
 };
@@ -335,7 +385,7 @@ function recordAttrsGroupNode(record: PrtfRecord): PrtfNode {
 function fieldsAndConstantsGroupNode(recordName: string, fieldsAndConstants: (PrtfField | PrtfConstant)[]): PrtfNode {
 	const group: GroupNode = {
 		kind: 'treeGroup', role: 'recordFields', id: `grp:rec:${recordName}:fields`,
-		label: `🧾 Fields and Constants (${fieldsAndConstants.length})`, recordName, children: fieldsAndConstants
+		label: `Fields and Constants (${fieldsAndConstants.length})`, recordName, children: fieldsAndConstants
 	};
 	return wrapGroup(group, fieldsAndConstants.length > 0 ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.None);
 };
@@ -344,7 +394,7 @@ function itemAttrsGroupNode(item: PrtfField | PrtfConstant): PrtfNode {
 	const attributes = item.attributes ?? [];
 	const group: GroupNode = {
 		kind: 'treeGroup', role: 'itemAttrs', id: `grp:item:${item.recordname}:${item.lineIndex}:attrs`,
-		label: `⚙️ Attributes (${attributes.length})`, recordName: item.recordname, itemLineIndex: item.lineIndex, children: attributes
+		label: `Attributes (${attributes.length})`, recordName: item.recordname, itemLineIndex: item.lineIndex, children: attributes
 	};
 	return wrapGroup(group, attributes.length > 0 ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
 };
@@ -353,10 +403,10 @@ function itemIndicatorsGroupNode(item: PrtfField | PrtfConstant): PrtfNode {
 	const list = item.indicators ?? [];
 	const group: GroupNode = {
 		kind: 'treeGroup', role: 'itemIndicators', id: `grp:item:${item.recordname}:${item.lineIndex}:ind`,
-		label: `📶 Indicators (${list.length})`, recordName: item.recordname, itemLineIndex: item.lineIndex,
+		label: `Indicators (${list.length})`, recordName: item.recordname, itemLineIndex: item.lineIndex,
 		children: list.map((ind, i): GroupNode => ({
 			kind: 'treeGroup', role: 'leafGroup', id: `grp:item:${item.recordname}:${item.lineIndex}:ind:${i}`,
-			label: `${String(ind.number).padStart(2, '0')}: ${ind.active ? 'ON' : 'OFF'}`, children: []
+			label: `${String(ind.number).padStart(2, '0')}: ${ind.active ? 'ON' : 'OFF'}`, indicatorActive: ind.active, children: []
 		}))
 	};
 	return wrapGroup(group, list.length > 0 ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
@@ -391,10 +441,10 @@ function indicatorTooltip(indicators: PrtfIndicator[] | undefined): string | und
 
 /**
  * Reveals and selects a field/constant in the "Definition" tree — used to keep the preview's
- * click-to-navigate in sync with the tree, same as it already is with the source editor (and same
- * as dspf-edit's own tree). Deliberately does expand whatever collapsed ancestors stand between the
- * root and the target — selecting a specific element is expected to show where it lives, same as
- * dspf-edit. A no-op if the tree/provider aren't available yet or the target can't be found.
+ * click-to-navigate in sync with the tree, same as it already is with the source editor.
+ * Deliberately expands whatever collapsed ancestors stand between the root and the target —
+ * selecting a specific element is expected to show where it lives. A no-op if the tree/provider
+ * aren't available yet or the target can't be found.
  */
 export function revealInTree(recordName: string, lineIndex: number): void {
 	const treeProvider = ExtensionState.treeProvider as PrtfTreeProvider | undefined;

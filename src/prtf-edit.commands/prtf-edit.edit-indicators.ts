@@ -13,16 +13,16 @@ import { PrtfNode } from '../prtf-edit.providers/prtf-edit.providers';
  * per group (see "Confirmed column layout" — 9-char indicator zone, 3 slots of 3 chars). */
 const MAX_PER_GROUP = 9;
 
+/** DDS's own limit on OR'd conditions for a single field/constant/keyword (each itself an
+ * AND-group of up to MAX_PER_GROUP indicators). */
+const MAX_OR_GROUPS = 9;
+
 type IndicatorItem = PrtfField | PrtfConstant | PrtfAttribute;
 
 function itemLabel(item: IndicatorItem): string {
 	if ('name' in item && item.name) {return item.name;};
 	if ('value' in item && item.value) {return item.value;};
 	return `line ${item.lineIndex + 1}`;
-};
-
-function summarizeGroups(groups: PrtfIndicator[][]): string {
-	return groups.map(g => g.map(ind => `${ind.active ? '' : 'NOT '}${ind.number}`).join(' AND ')).join('  OR  ');
 };
 
 /** One physical line's worth of indicator zone: up to 3 indicators, tagged with the column-7
@@ -91,85 +91,194 @@ function applyIndicatorGroups(document: vscode.TextDocument, edit: vscode.Worksp
 	edit.replace(document.uri, primaryLine.range, prefix + updatedPrimaryText);
 };
 
-async function promptAddIndicator(groups: PrtfIndicator[][]): Promise<PrtfIndicator[][] | undefined> {
-	let targetGroupIndex: number;
+function formatIndicator(ind: PrtfIndicator): string {
+	return `${ind.active ? '' : 'N'}${String(ind.number).padStart(2, '0')}`;
+};
 
-	if (groups.length === 0) {
-		targetGroupIndex = 0;
-	} else {
-		const groupChoices = groups.map((g, i) => ({
-			label: `Group ${i + 1} (AND)`,
-			description: g.map(ind => `${ind.active ? '' : 'NOT '}${ind.number}`).join(' AND '),
-			index: i
-		})).concat([{ label: "+ New OR'd group", description: '', index: groups.length }]);
-		const groupPicked = await vscode.window.showQuickPick(groupChoices, { placeHolder: 'Add to which AND-group?' });
-		if (!groupPicked) {return undefined;} // Cancelled.
-		targetGroupIndex = groupPicked.index;
+function formatGroupSummary(group: PrtfIndicator[]): string {
+	return group.map(formatIndicator).join(', ');
+};
+
+/** Parses one typed-in indicator, e.g. "51" (ON) or "N51" (OFF) — the single format used
+ * throughout this flow, whether adding a fresh group or changing one indicator in place. */
+function parseIndicatorInput(value: string): PrtfIndicator | undefined {
+	const match = /^(N?)([0-9]{1,2})$/i.exec(value.trim());
+	if (!match) {return undefined;};
+	const number = Number(match[2]);
+	if (number < 1 || number > 99) {return undefined;};
+	return { active: match[1].toUpperCase() !== 'N', number };
+};
+
+/**
+ * Collects one new AND-group of indicators via repeated input boxes — leaving one blank finishes
+ * the group, Esc cancels the whole thing. `existing` seeds an in-progress group (used when adding
+ * more indicators to one that already has some) so duplicates against it are caught too.
+ */
+async function collectIndicatorGroup(maxCount: number, existing: PrtfIndicator[] = []): Promise<PrtfIndicator[] | undefined> {
+	const collected = [...existing];
+	while (collected.length < maxCount) {
+		const input = await vscode.window.showInputBox({
+			title: `Indicator ${collected.length + 1}/${maxCount} (leave empty to finish)`,
+			prompt: "e.g. '51' (ON) or 'N51' (OFF)",
+			placeHolder: '51',
+			validateInput: value => {
+				if (!value.trim()) {return undefined;}; // Empty finishes the group.
+				const parsed = parseIndicatorInput(value);
+				if (!parsed) {return "Enter a whole number 1-99, optionally prefixed with 'N' (e.g. '51', 'N51').";};
+				if (collected.some(ind => ind.number === parsed.number && ind.active === parsed.active)) {return 'This indicator is already in the group.';};
+				return undefined;
+			}
+		});
+		if (input === undefined) {return undefined;}; // Cancelled.
+		if (!input.trim()) {break;}; // Finished.
+		collected.push(parseIndicatorInput(input)!);
+	};
+	return collected;
+};
+
+/** One row of the indicators menu: an existing OR'd AND-group (`groupIndex` into `groups`), or one
+ * of the two trailing action rows. */
+interface IndicatorMenuItem extends vscode.QuickPickItem {
+	groupIndex: number;
+	action?: 'addOr' | 'removeAll';
+};
+
+const EDIT_BUTTON: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('edit'), tooltip: 'Modify' };
+const REMOVE_BUTTON: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('trash'), tooltip: 'Remove' };
+
+/**
+ * Builds the indicators menu's rows: one per existing OR'd AND-group (e.g. "51, N61, 53", with
+ * edit + trash buttons), plus an "Add OR condition..." row, plus a "Remove all" row when there's
+ * more than one group (with just one, its own trash button already does the same thing).
+ */
+function buildIndicatorMenuItems(groups: PrtfIndicator[][]): IndicatorMenuItem[] {
+	const items: IndicatorMenuItem[] = groups.map((group, index) => ({
+		groupIndex: index,
+		label: groups.length > 1 ? `Condition ${index + 1}: ${formatGroupSummary(group)}` : formatGroupSummary(group),
+		buttons: [EDIT_BUTTON, REMOVE_BUTTON]
+	}));
+
+	items.push({ groupIndex: -1, action: 'addOr', label: '$(add) Add OR condition...' });
+
+	if (groups.length > 1) {
+		items.push({ groupIndex: -1, action: 'removeAll', label: '$(trash) Remove all indicators' });
 	};
 
-	if (targetGroupIndex < groups.length && groups[targetGroupIndex].length >= MAX_PER_GROUP) {
-		vscode.window.showErrorMessage(`PRTF: Group ${targetGroupIndex + 1} already has the DDS maximum of ${MAX_PER_GROUP} ANDed indicators.`);
-		return undefined;
+	return items;
+};
+
+/**
+ * Shows the indicators menu and resolves to what the user did: picked a row (or its edit button)
+ * to modify that OR'd condition (`action: 'edit'`), clicked a row's trash button to remove just
+ * that one (`action: 'remove'`), or picked one of the trailing action rows
+ * (`'addOr'`/`'removeAll'`) — undefined if dismissed. Needs the raw `createQuickPick` API rather
+ * than `showQuickPick`, since only it exposes per-item buttons (`onDidTriggerItemButton`).
+ */
+function showIndicatorMenu(
+	items: IndicatorMenuItem[],
+	label: string
+): Promise<{ action: 'edit' | 'remove' | 'addOr' | 'removeAll'; groupIndex: number } | undefined> {
+	return new Promise(resolve => {
+		const quickPick = vscode.window.createQuickPick<IndicatorMenuItem>();
+		quickPick.items = items;
+		quickPick.title = `Indicators for '${label}'`;
+		quickPick.placeholder = 'Select a condition to modify, use its buttons, or add an OR condition';
+		quickPick.ignoreFocusOut = true;
+
+		let settled = false;
+		const finish = (result: { action: 'edit' | 'remove' | 'addOr' | 'removeAll'; groupIndex: number } | undefined) => {
+			if (settled) {return;};
+			settled = true;
+			resolve(result);
+			quickPick.hide();
+		};
+
+		quickPick.onDidTriggerItemButton(event => {
+			finish({ action: event.button === REMOVE_BUTTON ? 'remove' : 'edit', groupIndex: event.item.groupIndex });
+		});
+		quickPick.onDidAccept(() => {
+			const picked = quickPick.selectedItems[0];
+			if (!picked) {finish(undefined); return;};
+			finish({ action: picked.action ?? 'edit', groupIndex: picked.groupIndex });
+		});
+		quickPick.onDidHide(() => {
+			finish(undefined);
+			quickPick.dispose();
+		});
+
+		quickPick.show();
+	});
+};
+
+/**
+ * Drills into one existing OR'd condition: add another indicator to it, change or remove one of
+ * its indicators, or clear it and start over. Emptying the group this way removes the whole OR
+ * condition, rather than leaving a dangling AND-group with nothing in it.
+ */
+async function modifyGroup(groups: PrtfIndicator[][], groupIndex: number): Promise<PrtfIndicator[][] | undefined> {
+	const current = groups[groupIndex];
+	const indicatorChoices = current.map((ind, i) => `Position ${i + 1}: ${formatIndicator(ind)}`);
+
+	const picked = await vscode.window.showQuickPick(
+		[...indicatorChoices, '+ Add new indicator', 'Clear all and start over'],
+		{ title: 'Modify condition', placeHolder: 'Choose an indicator to modify, or an action' }
+	);
+	if (!picked) {return undefined;}; // Cancelled, no change.
+
+	const replaceGroup = (newGroup: PrtfIndicator[]): PrtfIndicator[][] =>
+		newGroup.length > 0
+			? groups.map((g, i) => i === groupIndex ? newGroup : g)
+			: groups.filter((_, i) => i !== groupIndex);
+
+	if (picked === 'Clear all and start over') {
+		const newGroup = await collectIndicatorGroup(MAX_PER_GROUP);
+		return newGroup === undefined ? undefined : replaceGroup(newGroup);
 	};
 
-	const numberInput = await vscode.window.showInputBox({
-		prompt: 'Indicator number (1-99)',
-		placeHolder: '51',
+	if (picked === '+ Add new indicator') {
+		if (current.length >= MAX_PER_GROUP) {
+			vscode.window.showWarningMessage(`PRTF: this condition already has the DDS maximum of ${MAX_PER_GROUP} ANDed indicators.`);
+			return undefined;
+		};
+		const newGroup = await collectIndicatorGroup(MAX_PER_GROUP, current);
+		return newGroup === undefined ? undefined : replaceGroup(newGroup);
+	};
+
+	// One specific indicator picked, by its position in the list above.
+	const index = indicatorChoices.indexOf(picked);
+	const action = await vscode.window.showQuickPick(
+		['Change value', 'Remove this indicator'],
+		{ title: `Modify ${formatIndicator(current[index])}`, placeHolder: 'Choose action' }
+	);
+	if (!action) {return undefined;}; // Cancelled.
+
+	if (action === 'Remove this indicator') {
+		return replaceGroup(current.filter((_, i) => i !== index));
+	};
+
+	const input = await vscode.window.showInputBox({
+		title: `New value for position ${index + 1}`,
+		prompt: "e.g. '51' (ON) or 'N51' (OFF)",
+		value: formatIndicator(current[index]),
 		validateInput: value => {
-			const trimmed = value.trim();
-			return /^[1-9][0-9]?$/.test(trimmed) && Number(trimmed) <= 99 ? undefined : 'Enter a whole number from 1 to 99.';
+			const parsed = parseIndicatorInput(value);
+			if (!parsed) {return "Enter a whole number 1-99, optionally prefixed with 'N' (e.g. '51', 'N51').";};
+			if (current.some((ind, i) => i !== index && ind.number === parsed.number && ind.active === parsed.active)) {return 'This indicator is already used in another position.';};
+			return undefined;
 		}
 	});
-	if (numberInput === undefined) {return undefined;} // Cancelled.
-	const number = Number(numberInput.trim());
+	if (input === undefined) {return undefined;}; // Cancelled.
 
-	const activePicked = await vscode.window.showQuickPick(
-		[
-			{ label: 'ON', description: `active when *IN${String(number).padStart(2, '0')} is on`, active: true },
-			{ label: 'OFF (NOT)', description: `active when *IN${String(number).padStart(2, '0')} is off`, active: false }
-		],
-		{ placeHolder: 'Condition' }
-	);
-	if (!activePicked) {return undefined;} // Cancelled.
-
-	const newGroups = groups.map(g => [...g]);
-	if (targetGroupIndex >= newGroups.length) {newGroups.push([]);};
-	newGroups[targetGroupIndex].push({ active: activePicked.active, number });
-	return newGroups;
-};
-
-async function promptRemoveIndicator(groups: PrtfIndicator[][]): Promise<PrtfIndicator[][] | undefined> {
-	const choices = groups.flatMap((group, groupIndex) =>
-		group.map((ind, indexInGroup) => ({
-			label: `${ind.active ? '' : 'NOT '}${ind.number}`,
-			description: `Group ${groupIndex + 1}${groupIndex > 0 ? ' (OR)' : ''}`,
-			groupIndex,
-			indexInGroup
-		}))
-	);
-	const picked = await vscode.window.showQuickPick(choices, { placeHolder: 'Remove which indicator?' });
-	if (!picked) {return undefined;} // Cancelled.
-
-	const newGroups = groups.map(g => [...g]);
-	newGroups[picked.groupIndex].splice(picked.indexInGroup, 1);
-	return newGroups.filter(g => g.length > 0); // Drop an emptied group — the rest renumber naturally.
-};
-
-async function promptRemoveGroup(groups: PrtfIndicator[][]): Promise<PrtfIndicator[][] | undefined> {
-	const choices = groups.map((g, i) => ({
-		label: `Group ${i + 1}`,
-		description: g.map(ind => `${ind.active ? '' : 'NOT '}${ind.number}`).join(' AND '),
-		index: i
-	}));
-	const picked = await vscode.window.showQuickPick(choices, { placeHolder: "Remove which OR'd group?" });
-	if (!picked) {return undefined;} // Cancelled.
-	return groups.filter((_, i) => i !== picked.index);
+	const updated = [...current];
+	updated[index] = parseIndicatorInput(input)!;
+	return replaceGroup(updated);
 };
 
 /**
  * Lets the user add, remove, or clear the DDS indicator conditioning (AND groups, OR'd
- * alternatives) on a field, constant, or a specific keyword (attribute line) — one change per
- * invocation, same convention as edit-spacing.ts/edit-attributes.ts.
+ * alternatives) on a field, constant, or a specific keyword (attribute line). The menu shows each
+ * existing OR'd condition as its own row — with edit/trash buttons right on it — rather than
+ * asking "what do you want to do?" first.
  */
 export async function editIndicators(item: IndicatorItem): Promise<void> {
 	const document = ExtensionState.lastPrtfDocument;
@@ -177,33 +286,37 @@ export async function editIndicators(item: IndicatorItem): Promise<void> {
 
 	const groups = groupIndicatorsByCondition(item.indicators);
 	const label = itemLabel(item);
-	const summary = groups.length > 0 ? summarizeGroups(groups) : '(none)';
-
-	const actions: { label: string; action: 'add' | 'removeIndicator' | 'removeGroup' | 'clear' }[] = [
-		{ label: '+ Add indicator...', action: 'add' }
-	];
-	if (groups.length > 0) {actions.push({ label: 'Remove indicator...', action: 'removeIndicator' });};
-	if (groups.length > 1) {actions.push({ label: "Remove OR'd group...", action: 'removeGroup' });};
-	if (groups.length > 0) {actions.push({ label: 'Clear all indicators', action: 'clear' });};
-
-	const picked = await vscode.window.showQuickPick(actions, { placeHolder: `Indicators on '${label}': ${summary}` });
-	if (!picked) {return;} // Cancelled.
 
 	let newGroups: PrtfIndicator[][] | undefined;
 
-	if (picked.action === 'add') {
-		newGroups = await promptAddIndicator(groups);
-	} else if (picked.action === 'removeIndicator') {
-		newGroups = await promptRemoveIndicator(groups);
-	} else if (picked.action === 'removeGroup') {
-		newGroups = await promptRemoveGroup(groups);
+	if (groups.length === 0) {
+		// No condition yet: collect a single fresh AND-group directly, no menu needed.
+		const firstGroup = await collectIndicatorGroup(MAX_PER_GROUP);
+		if (!firstGroup || firstGroup.length === 0) {return;}; // Cancelled, or nothing entered.
+		newGroups = [firstGroup];
 	} else {
-		const choice = await vscode.window.showWarningMessage(`Clear all indicators on '${label}'?`, { modal: true }, 'Clear');
-		if (choice !== 'Clear') {return;} // Cancelled.
-		newGroups = [];
+		const choice = await showIndicatorMenu(buildIndicatorMenuItems(groups), label);
+		if (!choice) {return;}; // Cancelled.
+
+		if (choice.action === 'removeAll') {
+			newGroups = [];
+		} else if (choice.action === 'remove') {
+			newGroups = groups.filter((_, i) => i !== choice.groupIndex);
+		} else if (choice.action === 'addOr') {
+			if (groups.length >= MAX_OR_GROUPS) {
+				vscode.window.showWarningMessage(`PRTF: maximum of ${MAX_OR_GROUPS} OR'd conditions reached (DDS limit).`);
+				return;
+			};
+			const newGroup = await collectIndicatorGroup(MAX_PER_GROUP);
+			if (!newGroup || newGroup.length === 0) {return;}; // Cancelled, or nothing entered.
+			newGroups = [...groups, newGroup];
+		} else {
+			newGroups = await modifyGroup(groups, choice.groupIndex);
+			if (newGroups === undefined) {return;}; // Cancelled.
+		};
 	};
 
-	if (newGroups === undefined) {return;} // Cancelled somewhere in the sub-flow.
+	if (newGroups === undefined) {return;}; // Cancelled somewhere in the sub-flow.
 
 	const edit = new vscode.WorkspaceEdit();
 	applyIndicatorGroups(document, edit, item, newGroups);

@@ -6,6 +6,7 @@
 
 import * as vscode from 'vscode';
 import { PrtfNode, PrtfTreeProvider, TREE_NODE_CLICK_COMMAND } from './prtf-edit.providers/prtf-edit.providers';
+import { PrtfRecordCodeLensProvider } from './prtf-edit.providers/prtf-edit.record-codelens-provider';
 import { ExtensionState } from './prtf-edit.states/state';
 import { initializeDocumentListeners } from './prtf-edit.listeners/listeners';
 import { registerPreviewRecordCommand } from './prtf-edit.commands/prtf-edit.preview-record';
@@ -56,7 +57,7 @@ export function activate(context: vscode.ExtensionContext) {
 	// Bound as every navigable node's TreeItem.command (see its own comment): navigates the source
 	// editor to that node's line. Binding a real command here — rather than leaving navigation to
 	// onDidChangeSelection alone — is also what stops VS Code's default single-click expand/collapse
-	// toggle from firing alongside selection, matching dspf-edit's own tree (ddsEdit.goToLine).
+	// toggle from firing alongside selection.
 	context.subscriptions.push(
 		vscode.commands.registerCommand(TREE_NODE_CLICK_COMMAND, (node: PrtfNode) => {
 			const lineIndex = (node?.source as { lineIndex?: number } | undefined)?.lineIndex;
@@ -73,6 +74,12 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// Add treeView and diagnostics to subscriptions for proper disposal
 	context.subscriptions.push(treeView, ExtensionState.diagnosticCollection);
+
+	// "Preview (PRTF-edit)" CodeLens above each record, so it opens this extension's own preview
+	// instead of (or alongside) another extension's "Preview" CodeLens on the same line.
+	context.subscriptions.push(
+		vscode.languages.registerCodeLensProvider({ language: 'dds.prtf' }, new PrtfRecordCodeLensProvider(treeProvider))
+	);
 
 	registerPreviewRecordCommand(context);
 	registerEditAttributesCommand(context);

@@ -3,6 +3,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.4.0] - 2026-09-13
+
+### Added
+- A **"Preview (PRTF-edit)" CodeLens** above every record definition, alongside whatever other extension's own "Preview" CodeLens may already sit there, so the page-layout preview can be opened straight from the source without switching to the Definition tree first.
+
+### Changed
+- The Definition tree now uses VS Code's own codicon set for its record/field/constant/attribute/indicator icons, instead of emoji glyphs — renders consistently across themes and platforms.
+- An "Attributes" or "Indicators" group with nothing in it (a field/constant/record/file with none) no longer shows up as an empty, unexpandable row — it's left out of the tree entirely.
+- The "Indicators..." editor now shows each existing OR'd condition as its own row, with edit/trash buttons right on it, instead of asking "what do you want to do?" first.
+
 ## [0.3.0] - 2026-09-07
 
 ### Added
