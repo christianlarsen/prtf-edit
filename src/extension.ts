@@ -16,6 +16,7 @@ import { registerRecordCrudCommands } from './prtf-edit.commands/prtf-edit.recor
 import { registerCopyElementCommand } from './prtf-edit.commands/prtf-edit.copy-element';
 import { registerDeleteElementCommand } from './prtf-edit.commands/prtf-edit.delete-element';
 import { registerRenameCommands } from './prtf-edit.commands/prtf-edit.rename-element';
+import { registerEditFieldCommand } from './prtf-edit.commands/prtf-edit.edit-field';
 import { registerEditConstantTextCommand } from './prtf-edit.commands/prtf-edit.edit-constant-text';
 import { registerFillConstantCommand } from './prtf-edit.commands/prtf-edit.fill-constant';
 import { registerEditRecordSpacingCommand } from './prtf-edit.commands/prtf-edit.edit-spacing';
@@ -89,6 +90,7 @@ export function activate(context: vscode.ExtensionContext) {
 	registerDeleteElementCommand(context);
 	registerRenameCommands(context);
 	registerEditConstantTextCommand(context);
+	registerEditFieldCommand(context);
 	registerFillConstantCommand(context);
 	registerEditRecordSpacingCommand(context);
 	registerConfigurePreviewCommand(context);

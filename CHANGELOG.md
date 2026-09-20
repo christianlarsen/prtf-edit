@@ -3,6 +3,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.5.0] - 2026-09-20
+
+### Added
+- **Zoom** in the preview toolbar, next to "Fit to Screen": type a percentage (5–200%, in steps of 5, or use the arrows) to scale the page by hand — handy when Fit to Screen leaves everything too small. Zoom and Fit to Screen are mutually exclusive, and the chosen zoom survives re-renders.
+- **Spacing indicator** setting in the Configuration panel: "Always show the spacing indicator". Off by default, in which case the indicator only appears while hovering a field/constant that has spacing.
+- Selecting a field or constant now also lists its other appearance keywords (`COLOR`, `HIGHLIGHT`, `UNDERLINE`, `EDTCDE`, `FONT`, `CHRID`, `TEXT`) as buttons in the same row as its spacing, separated from the spacing buttons by a vertical bar — click one to edit it directly, without going through the "🎨 Attributes" picker first.
+- The record's own spacing and attributes (`HIGHLIGHT`, `ENDPAGE`, `FONT`) are now shown in full, stacked vertically beside the page (spacing first, a rule, then attributes), each one clickable to edit — replacing the lone "S" badge.
+- The file's own spacing (`SKIPB`/`SKIPA`) is now shown in full too, as a row of buttons above the page starting at its top-left corner, each one clickable to edit — replacing the "📄 S" toolbar button.
+- Clicking an attribute button that would simply remove a flag keyword (`HIGHLIGHT`, `UNDERLINE`, `CHRID` on a field/constant; `HIGHLIGHT`, `ENDPAGE` on a record) now asks for confirmation first, so it can't disappear unnoticed.
+- **"✏️ Edit Field" / "✏️ Edit Text"** button in the preview toolbar (enabled once a field or constant is selected; it reads "Edit Text" for a constant, "Edit Field" for a field), plus an **"Edit Field..."** entry in a field's Definition-tree menu. For a field it opens a small menu with its name, type and size, each editable, then "Apply changes" writes them together. Changing the type keeps the size consistent: a numeric field turned character loses its decimals, numeric is capped at 63 digits, and a date/time/timestamp has no size of its own. A referenced (REFFLD) field only offers its name. If the new type makes an existing `EDTCDE` or `CHRID` invalid, it says so.
+- Each keyword group in the preview is now labelled with its level — "File keywords" (above the page), "Record keywords" (beside it), "Field keywords" (in the toolbar for a selected field or constant) — and the Configuration panel has a new **Keywords** section to show or hide each level: "View file keywords", "View record keywords", "View field/constant keywords" (all on by default).
+- **`EDTWRD`** can now be set on a numeric field, from "🎨 Attributes" or its own button: a prompt for the edit word (each blank is a digit position; it warns, without blocking, when the number of digit positions doesn't match the field's digits). `EDTWRD` and `EDTCDE` can't apply to the same field, so setting one over the other asks to replace it in place.
+
+### Changed
+- The area around the page in the preview is now a darker gray, so the white sheet stands out from what surrounds it.
+- A field or constant with its own `SKIPB`/`SPACEB`/`SPACEA`/`SKIPA` is now marked with an arrow instead of an "S": `↑` for spacing before it, `↓` for spacing after it, `↕` for both.
+
+### Fixed
+- "Fit to Screen" measured the page's own width after the container around it had already been resized to the scaled size, so the page itself shrank along with it and later rescaling started from an already-shrunk size. The page's natural size no longer depends on that container.
+- The record's spacing/attribute buttons beside the page grew wider as the zoom went down, since the column holding them absorbed the space the shrinking page left over. They now keep a constant size at any zoom.
+
 ## [0.4.0] - 2026-09-13
 
 ### Added

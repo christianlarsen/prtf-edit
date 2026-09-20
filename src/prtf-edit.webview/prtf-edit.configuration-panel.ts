@@ -8,6 +8,8 @@ import * as vscode from 'vscode';
 import { ExtensionState } from '../prtf-edit.states/state';
 import { DECIMAL_FORMAT_OPTIONS, DecimalFormat, DEFAULT_DECIMAL_FORMAT, getDecimalFormat, resetDecimalFormat, setDecimalFormat } from '../prtf-edit.utils/prtf-edit.decimal-format';
 import { DATE_SEPARATOR_OPTIONS, DateSeparatorFormat, DEFAULT_DATE_SEPARATOR_FORMAT, getDateSeparatorFormat, resetDateSeparatorFormat, setDateSeparatorFormat } from '../prtf-edit.utils/prtf-edit.date-format';
+import { getSpacingMarkerAlwaysVisible, setSpacingMarkerAlwaysVisible } from '../prtf-edit.utils/prtf-edit.spacing-marker';
+import { KEYWORD_LEVELS, KeywordLevel, getKeywordVisibility, setKeywordVisibility } from '../prtf-edit.utils/prtf-edit.keyword-visibility';
 import { resolveDecimalFormatFromSystem, resolveDateSeparatorFormatFromSystem } from '../prtf-edit.ibmi/prtf-edit.ibmi-integration';
 import { RecordPreviewPanel } from './prtf-edit.record-preview-panel';
 
@@ -105,6 +107,16 @@ export class ConfigurationPanel {
 					vscode.window.showInformationMessage(`PRTF: decimal format set to '${format}' from the connected IBM i (QDECFMT).`);
 				} catch (error) {
 					vscode.window.showErrorMessage(error instanceof Error ? error.message : 'Could not read QDECFMT from the connected IBM i.');
+				};
+				break;
+			case 'setSpacingMarkerAlwaysVisible':
+				await setSpacingMarkerAlwaysVisible(message.value === true);
+				RecordPreviewPanel.refreshIfOpen(ExtensionState.lastPrtfElements);
+				break;
+			case 'setKeywordVisibility':
+				if (KEYWORD_LEVELS.includes(message.level)) {
+					await setKeywordVisibility(message.level as KeywordLevel, message.value === true);
+					RecordPreviewPanel.refreshIfOpen(ExtensionState.lastPrtfElements);
 				};
 				break;
 			case 'setDateSeparator':
@@ -233,8 +245,37 @@ ${dateSeparatorRows}
 	<button id="fetchDateSeparator" class="btn-secondary" style="margin-top: 0;">Fetch from IBM i</button>
 	<button id="resetDateSeparator" class="btn-secondary" style="margin-top: 0;">Reset to Default</button>
 </div>
+
+<hr class="section">
+
+<h2>Spacing Indicator</h2>
+<p class="hint">Arrow (↑ before, ↓ after, ↕ both) marking fields and constants that have SKIPB/SPACEB/SPACEA/SKIPA. When off, it only shows while hovering the field.</p>
+<div class="row">
+	<label class="radio-label">
+		<input type="checkbox" id="spacingMarkerAlways" ${getSpacingMarkerAlwaysVisible() ? 'checked' : ''}>
+		Always show the spacing indicator
+	</label>
+</div>
+
+<hr class="section">
+
+<h2>Keywords</h2>
+<p class="hint">Which levels' keywords the preview lists as clickable buttons: the file's above the page, the record's beside it, and a selected field's or constant's in the toolbar.</p>
+<div class="row"><label class="radio-label"><input type="checkbox" data-keyword-level="file" ${getKeywordVisibility('file') ? 'checked' : ''}> View file keywords</label></div>
+<div class="row"><label class="radio-label"><input type="checkbox" data-keyword-level="record" ${getKeywordVisibility('record') ? 'checked' : ''}> View record keywords</label></div>
+<div class="row"><label class="radio-label"><input type="checkbox" data-keyword-level="field" ${getKeywordVisibility('field') ? 'checked' : ''}> View field/constant keywords</label></div>
 <script>
 	const vscode = acquireVsCodeApi();
+
+	document.querySelectorAll('input[data-keyword-level]').forEach(input => {
+		input.addEventListener('change', () => {
+			vscode.postMessage({ type: 'setKeywordVisibility', level: input.dataset.keywordLevel, value: input.checked });
+		});
+	});
+
+	document.getElementById('spacingMarkerAlways').addEventListener('change', e => {
+		vscode.postMessage({ type: 'setSpacingMarkerAlwaysVisible', value: e.target.checked });
+	});
 
 	document.querySelectorAll('input[name="decimalFormat"]').forEach(input => {
 		input.addEventListener('change', () => {

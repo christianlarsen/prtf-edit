@@ -11,7 +11,7 @@ import { resolveFlowModeInsertion } from '../prtf-edit.parser/prtf-edit.parser';
 /** Field types offered by the quick-add flow — the v1 keyword scope (see README): character,
  * zoned decimal, date, time, timestamp. Floating point (F) and DBCS/UTF-16 (O/G) are left for a
  * hand-edit, same as the rest of the *AFPDS-only surface. */
-const FIELD_TYPES: { label: string; value: string }[] = [
+export const FIELD_TYPES: { label: string; value: string }[] = [
 	{ label: 'A — Character', value: 'A' },
 	{ label: 'S — Numeric (zoned decimal)', value: 'S' },
 	{ label: 'L — Date', value: 'L' },
@@ -66,6 +66,20 @@ export function buildFieldLine(name: string, type: string, length: number, decim
 	};
 
 	return [primaryLine];
+};
+
+/**
+ * Rewrites a field's own name/length/type/decimals zones (columns 19-28 and 30-37) in an existing
+ * source line, leaving the reference flag (29), usage (38), Line/Position (39-44) and every
+ * keyword past column 44 exactly as they were — the same zones buildFieldLine writes, for editing
+ * a field in place instead of creating one. L/T/Z get a blank length (see buildFieldLine).
+ */
+export function rewriteFieldLine(originalLine: string, name: string, type: string, length: number, decimals: number): string {
+	const padded = originalLine.length < 44 ? originalLine.padEnd(44) : originalLine;
+	const isDerivedLength = type === 'L' || type === 'T' || type === 'Z';
+	const lengthField = isDerivedLength ? '     ' : String(length).padStart(5, ' ');
+	const decimalsField = type === 'S' ? String(decimals).padStart(2, ' ') : '  ';
+	return padded.substring(0, 18) + name.padEnd(10) + padded.substring(28, 29) + lengthField + type + decimalsField + padded.substring(37);
 };
 
 export const NAME_PATTERN = /^[A-Z@#$][A-Z0-9@#$]{0,9}$/;
