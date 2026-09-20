@@ -3,6 +3,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.5.1] - 2026-09-20
+
+### Added
+- **Double-click an overlaid record** in the preview — anywhere from the row it starts on downward, even on empty space — to jump to it: it becomes the record being edited, and the one you were on becomes the overlay — so two records can be edited back and forth against each other. The source editor and the Definition tree follow to the new record, and the page keeps its scroll position.
+
+### Fixed
+- Dragging a flow-positioned field sideways with an "Overlay" active, in a record whose own `SKIPB` jumps to an absolute line, made the field swap places with the one before it, as if it had been dragged up a row. The overlay's height was being subtracted from the drop row even though that `SKIPB` makes the record land on the same rows regardless of the overlay.
+- The preview jumped back to the top after every edit (e.g. dropping a field placed low on the page); it now keeps its scroll position.
+- The Zoom box showed 80 while the page was actually displayed at 100%, so raising it to 85 made the page shrink. It now starts at 100.
+
 ## [0.5.0] - 2026-09-20
 
 ### Added
