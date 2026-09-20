@@ -6,7 +6,7 @@
 
 import * as vscode from 'vscode';
 import { PrtfElement, PrtfField, PrtfConstant, PrtfRecord, PrtfFile, PrtfAttribute, PrtfIndicator, systemKeywordPlaceholder, isLiteralConstantValue, findTextKeyword, findUnsupportedAfpdsKeywordsInRecord, groupIndicatorsByCondition } from '../prtf-edit.model/prtf-edit.model';
-import { simulateRecordFlow } from '../prtf-edit.parser/prtf-edit.parser';
+import { simulateRecordFlow, resolveFlowModeMove } from '../prtf-edit.parser/prtf-edit.parser';
 import { ExtensionState } from '../prtf-edit.states/state';
 import { revealInTree } from '../prtf-edit.providers/prtf-edit.providers';
 import { moveElement } from '../prtf-edit.commands/prtf-edit.move-element';
@@ -996,6 +996,18 @@ export function collectPageItemsWithOverlay(
 };
 
 /**
+ * From which page row a double-click switches to the overlaid record — its first row down to the
+ * bottom of the page, so anywhere at or below where it starts counts, whether or not it has
+ * anything printed there. With "Repeat" the copies tile from the top, so it's the first tile's
+ * first row. Undefined when there's no overlay (or it has nothing to show).
+ */
+function overlayStartRow(items: PageItem[], overlayRecordName: string | undefined): number | undefined {
+	if (!overlayRecordName) {return undefined;};
+	const rows = items.filter(item => item.overlay).map(item => item.row);
+	return rows.length > 0 ? Math.min(...rows) : undefined;
+};
+
+/**
  * Finds which record (and, if precise enough, which field/constant line) a source line belongs
  * to — used to keep the preview following the cursor as it moves through the source.
  * @param elements - The document's parsed structure
@@ -1141,7 +1153,7 @@ export class RecordPreviewPanel {
 	 * turns zoom off. zoomPercent is remembered even while zoomActive is false, so the slider
 	 * keeps its last value. Tracked host-side purely so a full re-render doesn't reset it. */
 	private zoomActive = false;
-	private zoomPercent = 80;
+	private zoomPercent = 100;
 	/** "Indicators" toggle — a panel-wide preference like showRuler, persisting across switching
 	 * which record is previewed. */
 	private indicatorsEnabled = false;
@@ -1150,6 +1162,11 @@ export class RecordPreviewPanel {
 	 * "Compose sequence" list — since the available/meaningful numbers differ per record; survives
 	 * a same-record re-render (e.g. a source edit), same as dspf-edit's own behavior. */
 	private activeIndicators: Set<number> = new Set();
+	/** Bumped whenever the preview moves to a different record on its own (tree click, source
+	 * navigation) — the webview only restores its saved scroll position while this is unchanged, so
+	 * a new record starts at the top. Deliberately *not* bumped by swapping with the overlay: that
+	 * keeps you where you were on the page. */
+	private scrollEpoch = 0;
 	private disposables: vscode.Disposable[] = [];
 
 	public static createOrShow(recordName: string, elements: PrtfElement[]): void {
@@ -1161,6 +1178,7 @@ export class RecordPreviewPanel {
 				// actually cleared on a record switch, despite the intent — a stale overlay target
 				// (from whatever record was active before) silently kept applying to the new one.
 				RecordPreviewPanel.current.overlayRecordName = undefined;
+				RecordPreviewPanel.current.scrollEpoch++;
 			};
 			RecordPreviewPanel.current.recordName = recordName;
 			RecordPreviewPanel.current.elements = elements;
@@ -1254,6 +1272,7 @@ export class RecordPreviewPanel {
 			panel.highlightLineIndex = target.targetLineIndex;
 			panel.activeIndicators = new Set();
 			panel.overlayRecordName = undefined;
+			panel.scrollEpoch++;
 			panel.render();
 		} else {
 			panel.postHighlight(target.targetLineIndex);
@@ -1331,6 +1350,23 @@ export class RecordPreviewPanel {
 				this.overlayRecordName = typeof message.recordName === 'string' && message.recordName ? message.recordName : undefined;
 				this.render();
 				break;
+			case 'swapOverlay': {
+				// Double-click on the dimmed overlay record: jump to it, with the record just left
+				// becoming the overlay — so the two can be edited back and forth against each other.
+				if (this.sequence.length === 0 && this.overlayRecordName) {
+					const target = this.elements.find((el): el is PrtfRecord => el.kind === 'record' && el.name === this.overlayRecordName);
+					if (target) {
+						this.overlayRecordName = this.recordName;
+						this.recordName = target.name;
+						this.activeIndicators = new Set();
+						this.highlightLineIndex = undefined;
+						this.render();
+						await RecordPreviewPanel.revealInSourceEditor(target.lineIndex);
+						revealInTree(target.name, target.lineIndex);
+					};
+				};
+				break;
+			};
 			case 'setOverlayRepeat':
 				this.overlayRepeat = Boolean(message.enabled);
 				this.render();
@@ -1382,9 +1418,20 @@ export class RecordPreviewPanel {
 					// resolveOverlayRowOffset). moveElement/resolveFlowModeMove know nothing about
 					// that — they simulate the record's own flow in isolation from row 0 — so that
 					// offset has to come back out here before the row reaches them.
-					const rowOffset = message.flow
-						? resolveOverlayRowOffset(this.elements, this.recordName, this.overlayRecordName)
-						: 0;
+					// That offset isn't always the whole overlay height: a SKIPB (an absolute jump)
+					// earlier in the record — its own or one on an item above the dragged one — makes
+					// everything after it land on the same row with or without the overlay. So
+					// where possible it's measured directly, as the gap between the row this item is
+					// drawn on right now and the row it has when simulated in isolation; the
+					// overlay-height estimate is only the fallback.
+					let rowOffset = 0;
+					if (message.flow) {
+						const rendered = this.collectCurrentItems().find(it => it.lineIndex === message.lineIndex && !it.overlay);
+						const isolated = resolveFlowModeMove(this.elements, this.recordName, message.lineIndex, isAttributeActive);
+						rowOffset = rendered && isolated.isFlowMode && isolated.currentRow !== undefined
+							? rendered.row - isolated.currentRow
+							: resolveOverlayRowOffset(this.elements, this.recordName, this.overlayRecordName);
+					};
 					moveElement(message.lineIndex, message.newRow - rowOffset, message.newCol, this.rows, this.cols, Boolean(message.flow), isAttributeActive);
 				};
 				break;
@@ -2449,6 +2496,22 @@ export class RecordPreviewPanel {
 			e.preventDefault();
 		});
 
+		// Double-click anywhere from the row the overlaid record starts on, down to the bottom of
+		// the page — even on empty space — switches to it. A double-click on one of the active record's own items is left alone
+		// (that's just selecting/editing it).
+		const OVERLAY_START_ROW = ${JSON.stringify(overlayStartRow(items, this.overlayRecordName) ?? null)};
+		page.addEventListener('dblclick', e => {
+			if (composeToggle.checked || OVERLAY_START_ROW === null) return;
+			if (e.target.closest('[data-line]')) return;
+			const metrics = measure();
+			const row = Math.floor((e.clientY - metrics.pageRect.top - metrics.padTop) / metrics.rowHeight) + 1;
+			const col = Math.round((e.clientX - metrics.pageRect.left - metrics.padLeft) / metrics.charWidth) + 1;
+			if (row < 1 || row > PAGE_ROWS || col < 1 || col > PAGE_COLS) return;
+			if (row >= OVERLAY_START_ROW) {
+				vscode.postMessage({ type: 'swapOverlay' });
+			};
+		});
+
 		page.addEventListener('contextmenu', e => {
 			if (composeToggle.checked) return; // Nothing editable while composing — same as drag.
 			const el = e.target.closest('[data-line]');
@@ -2665,6 +2728,27 @@ export class RecordPreviewPanel {
 			};
 		});
 		applyHighlight(${JSON.stringify(this.highlightLineIndex ?? null)}, ${JSON.stringify(initialSelectionLabel)});
+
+		// Every edit (a drag, an attribute change, ...) re-renders the whole page, which would
+		// otherwise send the scroll back to the top — losing your place on a tall page. The
+		// position is kept in the webview's own state and put back here, for the same record only:
+		// switching to a different one should start from the top.
+		const scrollView = document.querySelector('.page-wrapper');
+		const scrollScope = ${JSON.stringify(`${this.scrollEpoch}${this.sequence.length > 0 ? ' (composed)' : ''}`)};
+		const savedScroll = (vscode.getState() || {}).scroll;
+		if (savedScroll && savedScroll.scope === scrollScope) {
+			scrollView.scrollTop = savedScroll.top;
+			scrollView.scrollLeft = savedScroll.left;
+		};
+		let scrollSavePending = false;
+		scrollView.addEventListener('scroll', () => {
+			if (scrollSavePending) return;
+			scrollSavePending = true;
+			requestAnimationFrame(() => {
+				scrollSavePending = false;
+				vscode.setState({ ...(vscode.getState() || {}), scroll: { scope: scrollScope, top: scrollView.scrollTop, left: scrollView.scrollLeft } });
+			});
+		});
 	</script>
 </body>
 </html>`;

@@ -29,7 +29,7 @@ PRTF-edit doesn't replace your compiler — it closes the gap between writing DD
 - The selected field or constant's name, size, and position show right above the action buttons (e.g. `PRSUBTOTAL (11,2) — Pos= 13, 113`, or `1 constant selected — Pos= 13, 89, width 9`) — a bare system-keyword constant (`DATE`/`TIME`/`PAGNBR`) shows its own name instead of the generic message.
 - Two or more fields/constants sharing the exact same position (e.g. each conditioned on a different indicator) are no longer hidden behind whichever one happens to render on top: hovering that cell shows a dashed outline, and clicking it again cycles through the rest — the selection square turns green instead of blue while what's selected is one of them.
 - Right-clicking a field or constant also opens the spacing editor directly, with the option to convert an explicit-Line record to flow positioning in one step.
-- **"Overlay"**: show another record dimmed behind the one you're editing, to check alignment between them — e.g. a header against the detail line printed below it. A **"🔁 Repeat"** toggle tiles the overlay down the whole page, so it stays visible even after a totals record's own `SKIPB` pushes it far down.
+- **"Overlay"**: show another record dimmed behind the one you're editing, to check alignment between them — e.g. a header against the detail line printed below it. Double-click anywhere from the row where the dimmed overlay starts, downward, to switch to it — it becomes the record you're editing, and the one you left becomes the overlay. A **"🔁 Repeat"** toggle tiles the overlay down the whole page, so it stays visible even after a totals record's own `SKIPB` pushes it far down.
 - **"Compose sequence"**: preview several record formats together — each with its own repeat count — the way they'd actually print one after another (a header, several detail rows, a total line), with automatic page breaks once the content passes your configured page length, and optional repeating "standing" headers on every new page.
 - **"Indicators"**: simulate which indicators are on or off, to see exactly which fields, constants, and keywords would print — including how a conditioned `SKIPB`/`SPACEB`/`SPACEA`/`SKIPA` shifts everything printed after it, and indicators used only on a record-, or file-level keyword with no field of its own. Only shown when the record you're viewing actually uses indicators.
 - **Spacing at a glance**: a field or constant with its own `SKIPB`/`SPACEB`/`SPACEA`/`SKIPA` shows a small arrow — `↑` spacing before, `↓` after, `↕` both — while you hover it (or always, if you turn on "Always show the spacing indicator" in the Configuration panel), even before you select it. Select it and its keyword(s) appear as toggle buttons right under Indicators — lit blue when their own indicator condition is currently satisfied — click one to change its value directly. The record and the file get the same treatment, written out in full: the record's own spacing and attributes (`HIGHLIGHT`, `ENDPAGE`, `FONT`) stacked beside the page (staying visible as you scroll a tall page), and the file's `SKIPB`/`SKIPA` in a row above the page — all clickable to edit. **Attributes at a glance** too: a selected field or constant also lists its `COLOR`, `HIGHLIGHT`, `UNDERLINE`, `EDTCDE`, `FONT`, `CHRID` and `TEXT` as buttons next to its spacing, separated by a vertical bar; removing a flag keyword (e.g. `CHRID`) by clicking it asks for confirmation first.
@@ -90,6 +90,13 @@ This extension is under active development — some DDS keywords aren't supporte
 See the full changelog [here](./CHANGELOG.md).
 
 ### Latest
+**0.5.1** - 2026-09-20
+- Double-clicking an overlaid record in the preview now switches to it, with the record you were on becoming the overlay — without losing your place on the page.
+- Fixed a sideways drag of a flow-positioned field with an "Overlay" active swapping it with the field before it, in records that start with an absolute `SKIPB`.
+- The preview now keeps its scroll position after each edit instead of jumping back to the top.
+- The Zoom box now starts at 100, matching the size the page is actually shown at.
+
+### Previous
 **0.5.0** - 2026-09-20
 - Added a **Zoom** box next to "Fit to Screen" in the preview toolbar: type a percentage from 5 to 200 (in steps of 5) to scale the page by hand.
 - Selecting a field or constant now shows its other attributes (`COLOR`, `HIGHLIGHT`, `UNDERLINE`, `EDTCDE`, `FONT`, `CHRID`, `TEXT`) as clickable buttons next to its spacing, and the record's own spacing and attributes appear in full beside the page instead of a lone "S". The file's `SKIPB`/`SKIPA` show in full above the page instead of the "📄 S" toolbar button. Removing a flag keyword by clicking its button now asks for confirmation.
@@ -100,13 +107,6 @@ See the full changelog [here](./CHANGELOG.md).
 - The area around the page is now a darker gray, so the white sheet stands out.
 - Fixed the record's buttons beside the page growing wider as the zoom went down.
 - Fixed "Fit to Screen" shrinking the page's own measured size along with its container, which could make scaling back up get stuck.
-
-### Previous
-**0.4.0** - 2026-09-13
-- Added a **"Preview (PRTF-edit)" CodeLens** above every record definition, so the preview can be opened straight from the source without switching to the Definition tree first — shown next to any other extension's own "Preview" CodeLens on the same line.
-- The Definition tree now uses VS Code's own codicon set for its icons instead of emoji glyphs, for a more consistent look across themes and platforms.
-- An "Attributes" or "Indicators" group with nothing in it no longer shows up as an empty row in the tree.
-- The "Indicators..." editor now shows each existing OR'd condition as its own row, with edit/trash buttons right on it, instead of a generic "what do you want to do?" menu first.
 
 ---
 
