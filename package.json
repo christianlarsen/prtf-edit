@@ -8,7 +8,7 @@
     "url": "https://www.linkedin.com/in/christianlarsenvalverde/"
   },
   "publisher": "ChristianLarsen",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/christianlarsen/prtf-edit"
@@ -110,6 +110,10 @@
         "title": "Delete Record"
       },
       {
+        "command": "prtf-edit.edit-field",
+        "title": "Edit Field..."
+      },
+      {
         "command": "prtf-edit.rename-field",
         "title": "Rename Field..."
       },
@@ -192,6 +196,11 @@
           "command": "prtf-edit.delete-record",
           "when": "view == prtf-edit.schema-view && viewItem == record",
           "group": "9_recordActions"
+        },
+        {
+          "command": "prtf-edit.edit-field",
+          "when": "view == prtf-edit.schema-view && viewItem == field",
+          "group": "1_modification@0"
         },
         {
           "command": "prtf-edit.rename-field",

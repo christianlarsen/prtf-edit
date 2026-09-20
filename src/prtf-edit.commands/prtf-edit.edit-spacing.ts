@@ -235,7 +235,7 @@ export async function editSpacing(lineIndex: number, presetKeyword?: string): Pr
  * entry, which a record never has. The keyword can still be written inline on the record's own
  * "R recordname" line (e.g. the samples' own "...R DETALLE   SPACEA(1)"), so that branch is kept.
  */
-export async function editRecordSpacing(record: PrtfRecord): Promise<void> {
+export async function editRecordSpacing(record: PrtfRecord, presetKeyword?: string): Promise<void> {
 	const document = ExtensionState.lastPrtfDocument;
 	if (!document) {return;}
 
@@ -250,7 +250,8 @@ export async function editRecordSpacing(record: PrtfRecord): Promise<void> {
 		};
 	});
 
-	const picked = await vscode.window.showQuickPick(choices, { placeHolder: `Which spacing keyword do you want to set or clear on '${record.name}'?` });
+	const picked = (presetKeyword ? choices.find(c => c.keyword === presetKeyword) : undefined)
+		?? await vscode.window.showQuickPick(choices, { placeHolder: `Which spacing keyword do you want to set or clear on '${record.name}'?` });
 	if (!picked) {return;}
 
 	const input = await vscode.window.showInputBox({
@@ -325,7 +326,7 @@ export function editRecordSpacingFromNode(node: PrtfNode): void {
  * without that restriction — it simply doesn't affect a record that positions everything
  * explicitly, rather than conflicting with it.
  */
-export async function editFileSpacing(file: PrtfFile): Promise<void> {
+export async function editFileSpacing(file: PrtfFile, presetKeyword?: string): Promise<void> {
 	const document = ExtensionState.lastPrtfDocument;
 	if (!document) {return;}
 
@@ -340,7 +341,8 @@ export async function editFileSpacing(file: PrtfFile): Promise<void> {
 		};
 	});
 
-	const picked = await vscode.window.showQuickPick(choices, { placeHolder: 'Which file-level spacing keyword do you want to set or clear?' });
+	const picked = (presetKeyword ? choices.find(c => c.keyword === presetKeyword) : undefined)
+		?? await vscode.window.showQuickPick(choices, { placeHolder: 'Which file-level spacing keyword do you want to set or clear?' });
 	if (!picked) {return;}
 
 	const input = await vscode.window.showInputBox({

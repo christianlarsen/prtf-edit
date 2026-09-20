@@ -8,7 +8,7 @@ import * as vscode from 'vscode';
 import { ExtensionState } from '../prtf-edit.states/state';
 import { isEmptyKeywordOnlyLine, recordAttrsAnchorLineIndex } from './prtf-edit.move-element';
 import { findTextKeyword, PrtfAttribute, PrtfRecord } from '../prtf-edit.model/prtf-edit.model';
-import { COLOR_NAMES, EDIT_CODES, parseEdtcde } from '../prtf-edit.webview/prtf-edit.record-preview-panel';
+import { COLOR_NAMES, EDIT_CODES, parseEdtcde, parseEdtwrd } from '../prtf-edit.webview/prtf-edit.record-preview-panel';
 import { PrtfNode } from '../prtf-edit.providers/prtf-edit.providers';
 import { deletableLineRange } from '../prtf-edit.utils/prtf-edit.edit-helpers';
 
@@ -21,7 +21,10 @@ const KEYWORD_ZONE_WIDTH = 36;
 const UNDERLINE_PATTERN = /\s?\bUNDERLINE\b/i;
 const HIGHLIGHT_PATTERN = /\s?\bHIGHLIGHT\b/i;
 const COLOR_PATTERN = /\s?\bCOLOR\(\s*[^)]*\)/i;
-const EDTCDE_PATTERN = /\s?\bEDTCDE\(\s*[^)]*\)/i;
+export const EDTCDE_PATTERN = /\s?\bEDTCDE\(\s*[^)]*\)/i;
+/** The edit word is a quoted literal (blanks are digit positions), so — unlike EDTCDE — it can
+ * itself contain ')' and doubled quotes. */
+const EDTWRD_PATTERN = /\s?\bEDTWRD\(\s*'(?:[^']|'')*'\s*\)/i;
 const TEXT_PATTERN = /\s?\bTEXT\(\s*'(?:[^']|'')*'\s*\)/i;
 /** Record-level only — an unconditional page eject right after that record prints (see
  * hasEndPage, record-preview-panel.ts). */
@@ -38,7 +41,7 @@ const FONT_PATTERN = /\s?(?:\b|(?<=\d))FONT\(((?:[^()]|\([^()]*\))*)\)/i;
 /** Field-level only, no parameters — like HIGHLIGHT/UNDERLINE, but with the same digit-boundary
  * trick as FONT_PATTERN: the DDS reference's own CHRID example ("20CHRID") abuts a Position digit
  * directly with no space. */
-const CHRID_PATTERN = /\s?(?:\b|(?<=\d))CHRID\b/i;
+export const CHRID_PATTERN = /\s?(?:\b|(?<=\d))CHRID\b/i;
 
 /** The minimal shape applyOrInsertKeyword actually needs — anything with a primary line, an
  * optional last-line anchor for appending a new continuation line, and its own attribute list.
@@ -54,6 +57,7 @@ type AttributeItem = KeywordHost & {
 	kind: 'field' | 'constant';
 	name: string;
 	type?: string;
+	length?: number;
 	recordname: string;
 };
 
@@ -119,6 +123,19 @@ function edtcdeDescription(code: string): string {
 };
 
 /**
+ * Asks before a flag keyword (HIGHLIGHT/UNDERLINE/CHRID/ENDPAGE) is removed by a single click on
+ * its preview button — unlike the other attributes, which open a picker or input box that can
+ * simply be cancelled, a flag has nothing to confirm and would vanish silently. Only asked when
+ * the edit came from such a button (`presetKind`) and the flag is currently on; the QuickPick
+ * route already has its own explicit step.
+ */
+async function confirmFlagRemoval(presetKind: string | undefined, flagOn: boolean, keyword: string, ownerName: string): Promise<boolean> {
+	if (!presetKind || !flagOn) {return true;};
+	const answer = await vscode.window.showWarningMessage(`Remove ${keyword} from '${ownerName}'?`, { modal: true }, 'Remove');
+	return answer === 'Remove';
+};
+
+/**
  * Replaces an existing occurrence of `pattern` on whichever line it's on — the item's own
  * primary line, or a dedicated keyword-only continuation line (deleted outright if that removal
  * leaves it empty) — or, when there's no existing occurrence and a value is being set, appends a
@@ -170,8 +187,9 @@ export function applyOrInsertKeyword(
  * placeholder width; TEXT shows as a hover tooltip) — this is what makes them editable too, rather
  * than only settable by hand-editing the DDS source.
  * @param lineIndex - Zero-based source line of the field/constant to edit
+ * @param presetKind - Skips the QuickPick and edits this keyword directly (from a button in the preview's own attribute row)
  */
-export async function editAttributes(lineIndex: number): Promise<void> {
+export async function editAttributes(lineIndex: number, presetKind?: string): Promise<void> {
 	const document = ExtensionState.lastPrtfDocument;
 	if (!document) {return;}
 
@@ -184,6 +202,7 @@ export async function editAttributes(lineIndex: number): Promise<void> {
 	const currentText = findTextKeyword(item.attributes as PrtfAttribute[] | undefined);
 	const currentColor = currentColorCode(item.attributes);
 	const currentEdtcde = parseEdtcde(item.attributes as PrtfAttribute[] | undefined);
+	const currentEdtwrd = parseEdtwrd(item.attributes as PrtfAttribute[] | undefined);
 	const currentFont = currentFontValue(item.attributes);
 	const highlightOn = hasFlag(item.attributes, HIGHLIGHT_PATTERN);
 	const underlineOn = hasFlag(item.attributes, UNDERLINE_PATTERN);
@@ -197,7 +216,7 @@ export async function editAttributes(lineIndex: number): Promise<void> {
 	// Note: the choice's own discriminator is named `attrKind`, not `kind` — QuickPickItem already
 	// declares a `kind` property of its own (QuickPickItemKind, used for separators), which a same-
 	// named custom field would collide with.
-	const choices: { label: string; description: string; attrKind: 'TEXT' | 'COLOR' | 'HIGHLIGHT' | 'UNDERLINE' | 'EDTCDE' | 'FONT' | 'CHRID' }[] = [
+	const choices: { label: string; description: string; attrKind: 'TEXT' | 'COLOR' | 'HIGHLIGHT' | 'UNDERLINE' | 'EDTCDE' | 'EDTWRD' | 'FONT' | 'CHRID' }[] = [
 		{ label: 'TEXT', description: currentText ? `"${currentText}"` : '(not set)', attrKind: 'TEXT' },
 		{ label: 'COLOR', description: currentColor ?? '(none)', attrKind: 'COLOR' },
 		{ label: 'HIGHLIGHT', description: highlightOn ? 'on' : 'off', attrKind: 'HIGHLIGHT' },
@@ -207,12 +226,16 @@ export async function editAttributes(lineIndex: number): Promise<void> {
 	if (isNumericField || isPagnbr) {
 		choices.push({ label: 'EDTCDE', description: currentEdtcde ? currentEdtcde.code + (currentEdtcde.currency ? ` ${currentEdtcde.currency}` : '') : '(none)', attrKind: 'EDTCDE' });
 	};
+	if (isNumericField) {
+		choices.push({ label: 'EDTWRD', description: currentEdtwrd !== undefined ? `'${currentEdtwrd}'` : '(none)', attrKind: 'EDTWRD' });
+	};
 	// Not valid on constant fields or numeric fields (DDS reference, CHRID keyword).
 	if (item.kind === 'field' && !isNumericField) {
 		choices.push({ label: 'CHRID', description: chridOn ? 'on' : 'off', attrKind: 'CHRID' });
 	};
 
-	const picked = await vscode.window.showQuickPick(choices, { placeHolder: `Edit an attribute of '${item.name}'` });
+	const picked = (presetKind ? choices.find(c => c.attrKind === presetKind) : undefined)
+		?? await vscode.window.showQuickPick(choices, { placeHolder: `Edit an attribute of '${item.name}'` });
 	if (!picked) {return;}
 
 	const edit = new vscode.WorkspaceEdit();
@@ -242,9 +265,11 @@ export async function editAttributes(lineIndex: number): Promise<void> {
 		applyOrInsertKeyword(document, edit, item, COLOR_PATTERN, colorPicked.code ? `COLOR(${colorPicked.code})` : undefined);
 
 	} else if (picked.attrKind === 'HIGHLIGHT') {
+		if (!await confirmFlagRemoval(presetKind, highlightOn, 'HIGHLIGHT', item.name)) {return;}
 		applyOrInsertKeyword(document, edit, item, HIGHLIGHT_PATTERN, highlightOn ? undefined : 'HIGHLIGHT');
 
 	} else if (picked.attrKind === 'UNDERLINE') {
+		if (!await confirmFlagRemoval(presetKind, underlineOn, 'UNDERLINE', item.name)) {return;}
 		applyOrInsertKeyword(document, edit, item, UNDERLINE_PATTERN, underlineOn ? undefined : 'UNDERLINE');
 
 	} else if (picked.attrKind === 'FONT') {
@@ -270,6 +295,7 @@ export async function editAttributes(lineIndex: number): Promise<void> {
 			vscode.window.showErrorMessage(`PRTF: can't enable CHRID on '${item.name}' — it ${currentFont ? '' : `inherits from '${item.recordname}' `}a graphic FONT('${effectiveFont}'), and CHRID and a graphic FONT can't apply to the same field. Give it a numeric FONT (or remove FONT) first.`);
 			return;
 		};
+		if (!await confirmFlagRemoval(presetKind, chridOn, 'CHRID', item.name)) {return;}
 		applyOrInsertKeyword(document, edit, item, CHRID_PATTERN, chridOn ? undefined : 'CHRID');
 
 	} else if (picked.attrKind === 'EDTCDE') {
@@ -291,7 +317,44 @@ export async function editAttributes(lineIndex: number): Promise<void> {
 			});
 			if (currency === undefined) {return;} // Cancelled.
 			const raw = currency === '' ? `EDTCDE(${codePicked.code})` : `EDTCDE(${codePicked.code} ${currency})`;
-			applyOrInsertKeyword(document, edit, item, EDTCDE_PATTERN, raw);
+			// EDTCDE and EDTWRD can't be on the same field: an existing edit word is replaced in
+			// place (one edit, so it can't collide with another on the same line).
+			if (currentEdtwrd !== undefined) {
+				const confirmed = await vscode.window.showWarningMessage(`'${item.name}' has an edit word — EDTCDE and EDTWRD can't both apply. Replace EDTWRD('${currentEdtwrd}') with ${raw}?`, { modal: true }, 'Replace');
+				if (confirmed !== 'Replace') {return;}
+				applyOrInsertKeyword(document, edit, item, EDTWRD_PATTERN, raw);
+			} else {
+				applyOrInsertKeyword(document, edit, item, EDTCDE_PATTERN, raw);
+			};
+		};
+
+	} else if (picked.attrKind === 'EDTWRD') {
+		const digitPositions = (word: string) => (word.split('&')[0].match(/ /g) ?? []).length;
+		const input = await vscode.window.showInputBox({
+			prompt: `EDTWRD('...') — each blank is a digit position, any other character prints as it is (0 ends zero suppression, & splits the negative part). Leave empty to remove.`,
+			value: currentEdtwrd ?? '',
+			validateInput: value => {
+				const rawLength = `EDTWRD('${value.replace(/'/g, "''")}')`.length;
+				if (rawLength > KEYWORD_ZONE_WIDTH) {return `Too long to fit on one line (${rawLength}/${KEYWORD_ZONE_WIDTH} characters).`;}
+				if (value !== '' && item.length && digitPositions(value) !== item.length) {
+					return { message: `${digitPositions(value)} digit position(s) (blanks), but '${item.name}' has ${item.length} digit(s).`, severity: vscode.InputBoxValidationSeverity.Warning };
+				};
+				return undefined;
+			}
+		});
+		if (input === undefined) {return;} // Cancelled.
+		if (input === '') {
+			if (currentEdtwrd === undefined) {return;} // Nothing to remove.
+			applyOrInsertKeyword(document, edit, item, EDTWRD_PATTERN, undefined);
+		} else {
+			const raw = `EDTWRD('${input.replace(/'/g, "''")}')`;
+			if (currentEdtcde !== undefined) {
+				const confirmed = await vscode.window.showWarningMessage(`'${item.name}' has EDTCDE — EDTCDE and EDTWRD can't both apply. Replace EDTCDE(${currentEdtcde.code}) with ${raw}?`, { modal: true }, 'Replace');
+				if (confirmed !== 'Replace') {return;}
+				applyOrInsertKeyword(document, edit, item, EDTCDE_PATTERN, raw);
+			} else {
+				applyOrInsertKeyword(document, edit, item, EDTWRD_PATTERN, raw);
+			};
 		};
 	};
 
@@ -319,7 +382,7 @@ export function editAttributesFromNode(node: PrtfNode): void {
  * small anchor object, since a record has no single lastLineIndex field of its own the way a
  * field/constant does.
  */
-export async function editRecordAttributes(record: PrtfRecord): Promise<void> {
+export async function editRecordAttributes(record: PrtfRecord, presetKind?: string): Promise<void> {
 	const document = ExtensionState.lastPrtfDocument;
 	if (!document) {return;}
 
@@ -333,15 +396,18 @@ export async function editRecordAttributes(record: PrtfRecord): Promise<void> {
 		{ label: 'FONT', description: currentFont ? `(${currentFont})` : '(none)', attrKind: 'FONT' },
 	];
 
-	const picked = await vscode.window.showQuickPick(choices, { placeHolder: `Edit an attribute of '${record.name}'` });
+	const picked = (presetKind ? choices.find(c => c.attrKind === presetKind) : undefined)
+		?? await vscode.window.showQuickPick(choices, { placeHolder: `Edit an attribute of '${record.name}'` });
 	if (!picked) {return;}
 
 	const edit = new vscode.WorkspaceEdit();
 	const anchor: KeywordHost = { lineIndex: record.lineIndex, lastLineIndex: recordAttrsAnchorLineIndex(record), attributes: record.attributes };
 
 	if (picked.attrKind === 'HIGHLIGHT') {
+		if (!await confirmFlagRemoval(presetKind, highlightOn, 'HIGHLIGHT', record.name)) {return;}
 		applyOrInsertKeyword(document, edit, anchor, HIGHLIGHT_PATTERN, highlightOn ? undefined : 'HIGHLIGHT');
 	} else if (picked.attrKind === 'ENDPAGE') {
+		if (!await confirmFlagRemoval(presetKind, endPageOn, 'ENDPAGE', record.name)) {return;}
 		applyOrInsertKeyword(document, edit, anchor, ENDPAGE_PATTERN, endPageOn ? undefined : 'ENDPAGE');
 	} else {
 		const input = await vscode.window.showInputBox({

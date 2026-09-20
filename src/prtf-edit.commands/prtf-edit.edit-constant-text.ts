@@ -55,7 +55,12 @@ export async function replaceConstantText(
  */
 export async function editConstantTextFromNode(node: PrtfNode): Promise<void> {
 	if (!node || node.source.kind !== 'constant') {return;}
-	const constant = node.source as PrtfConstant;
+	await editConstantText(node.source as PrtfConstant);
+};
+
+/** The prompt-and-rewrite behind editConstantTextFromNode, for a constant already in hand — also
+ * used by the preview's own "✏️ Edit Text" button, which knows a line index rather than a tree node. */
+export async function editConstantText(constant: PrtfConstant): Promise<void> {
 
 	if (!isPlainTextLiteral(constant.name)) {
 		vscode.window.showInformationMessage(

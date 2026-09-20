@@ -14,9 +14,13 @@ import { addConstantAt } from '../prtf-edit.commands/prtf-edit.add-constant';
 import { addFieldAt } from '../prtf-edit.commands/prtf-edit.add-field';
 import { editSpacing, editRecordSpacing, editFileSpacing, keywordPattern, SPACING_KEYWORDS, FILE_SPACING_KEYWORDS } from '../prtf-edit.commands/prtf-edit.edit-spacing';
 import { deleteElement } from '../prtf-edit.commands/prtf-edit.delete-element';
-import { editAttributes } from '../prtf-edit.commands/prtf-edit.edit-attributes';
+import { editField } from '../prtf-edit.commands/prtf-edit.edit-field';
+import { editConstantText } from '../prtf-edit.commands/prtf-edit.edit-constant-text';
+import { editAttributes, editRecordAttributes } from '../prtf-edit.commands/prtf-edit.edit-attributes';
 import { getDecimalSeparators } from '../prtf-edit.utils/prtf-edit.decimal-format';
 import { getDateSeparator } from '../prtf-edit.utils/prtf-edit.date-format';
+import { getKeywordVisibility } from '../prtf-edit.utils/prtf-edit.keyword-visibility';
+import { getSpacingMarkerAlwaysVisible } from '../prtf-edit.utils/prtf-edit.spacing-marker';
 
 /** Default page size (66 lines is the traditional 11" @ 6 LPI page; 132 columns is 10 CPI on
  * standard wide computer paper — both just starting points, editable in the toolbar). */
@@ -119,6 +123,57 @@ interface PageItem {
 	 * only, not live indicator state (that distinction is what the spacing row's own on/off already
 	 * shows once selected). */
 	flags?: { indicators: boolean; spacing: boolean; attributes: boolean };
+	/** This item's own appearance keywords (COLOR/HIGHLIGHT/UNDERLINE/EDTCDE/FONT/CHRID/TEXT) that are
+	 * actually set, for the same toolbar row as `spacing` — one clickable button each, which reopens
+	 * editAttributes preset to that keyword. */
+	attrs?: AttributeEntry[];
+};
+
+/** One set appearance keyword, as a button: `kind` is editAttributes/editRecordAttributes' own
+ * discriminator, `label` the keyword as written (long values shortened), `active` the same
+ * indicator-condition on/off as a spacing entry. */
+type AttributeEntry = { kind: string; label: string; active: boolean; title: string };
+
+/** Keywords a field/constant's attribute row lists, in display order (TEXT last — it's the longest). */
+const ITEM_ATTRIBUTE_KINDS = ['COLOR', 'HIGHLIGHT', 'UNDERLINE', 'EDTCDE', 'EDTWRD', 'FONT', 'CHRID', 'TEXT'] as const;
+/** Same, for a record format — the only ones editRecordAttributes understands. */
+const RECORD_ATTRIBUTE_KINDS = ['HIGHLIGHT', 'ENDPAGE', 'FONT'] as const;
+
+const ATTRIBUTE_PATTERNS: Record<string, RegExp> = {
+	COLOR: /\bCOLOR\(\s*([^)]*?)\s*\)/i,
+	HIGHLIGHT: /\bHIGHLIGHT\b/i,
+	UNDERLINE: /\bUNDERLINE\b/i,
+	ENDPAGE: /\bENDPAGE\b/i,
+	EDTCDE: /\bEDTCDE\(\s*([^)]*?)\s*\)/i,
+	FONT: /(?:\b|(?<=\d))FONT\(((?:[^()]|\([^()]*\))*)\)/i,
+	CHRID: /(?:\b|(?<=\d))CHRID\b/i,
+	TEXT: /\bTEXT\(\s*'((?:[^']|'')*)'\s*\)/i,
+	EDTWRD: /\bEDTWRD\(\s*'((?:[^']|'')*)'\s*\)/i
+};
+
+const ATTRIBUTE_LABEL_MAX = 18;
+
+/** Reads whichever of `kinds` are actually set on `attributes`, for the preview's attribute
+ * buttons. Quoted literals are blanked out before matching every keyword but TEXT, so a constant's
+ * own text (or a TEXT description) that happens to contain e.g. "highlight" isn't read as one. */
+function readAttributeEntries(attributes: PrtfAttribute[] | undefined, kinds: readonly string[], activeIndicators: Set<number>): AttributeEntry[] {
+	const result: AttributeEntry[] = [];
+	for (const kind of kinds) {
+		const pattern = ATTRIBUTE_PATTERNS[kind];
+		for (const attr of attributes ?? []) {
+			const haystack = kind === 'TEXT' || kind === 'EDTWRD' ? attr.value : attr.value.replace(/'(?:[^']|'')*'/g, "''");
+			const match = haystack.match(pattern);
+			if (!match) {continue;};
+			const quoted = kind === 'TEXT' || kind === 'EDTWRD';
+			const full = match[1] !== undefined ? `${kind}(${quoted ? `'${match[1]}'` : match[1].trim()})` : kind;
+			// An edit word's blanks are its digit positions, which a button's text would collapse.
+			const shown = kind === 'EDTWRD' ? full.replace(/ /g, '·') : full;
+			const label = shown.length > ATTRIBUTE_LABEL_MAX ? shown.slice(0, ATTRIBUTE_LABEL_MAX - 1) + '…' : shown;
+			result.push({ kind, label, active: isItemDisplayed(attr.indicators, activeIndicators), title: full });
+			break;
+		};
+	};
+	return result;
 };
 
 /** Reads whichever of the four spacing keywords are actually set on an item, for the preview's own
@@ -593,7 +648,8 @@ function buildFieldPageItem(field: PrtfField, rowOverride: number | undefined, f
 		kind: 'field', name: field.name, length: field.length, decimals: field.decimals,
 		underline: hasUnderline(activeAttributes), flowPositioned,
 		bold: hasHighlight(activeAttributes, recordAttributes), color: getColor(activeAttributes),
-		spacing, flags: itemFlags(field.indicators, field.attributes, spacing)
+		spacing, flags: itemFlags(field.indicators, field.attributes, spacing),
+		attrs: readAttributeEntries(field.attributes, ITEM_ATTRIBUTE_KINDS, activeIndicators)
 	};
 };
 
@@ -614,7 +670,8 @@ function buildConstantPageItem(constant: PrtfConstant, rowOverride: number | und
 		kind: 'constant', name: isLiteral ? undefined : systemKeywordName(constant.name),
 		underline: hasUnderline(activeAttributes), flowPositioned,
 		bold: hasHighlight(activeAttributes, recordAttributes), color: getColor(activeAttributes),
-		spacing, flags: itemFlags(undefined, constant.attributes, spacing)
+		spacing, flags: itemFlags(undefined, constant.attributes, spacing),
+		attrs: readAttributeEntries(constant.attributes, ITEM_ATTRIBUTE_KINDS, activeIndicators)
 	};
 };
 
@@ -1009,11 +1066,16 @@ function renderLineHtml(charLine: string, ownerLine: (number | undefined)[], sta
 			const spacingAttr = (!item.overlay && item.spacing && item.spacing.length > 0)
 				? ` data-spacing="${escapeHtml(JSON.stringify(item.spacing)).replace(/"/g, '&quot;')}"`
 				: '';
-			// Trying just 'S' (spacing) for now — indicators/attributes still computed in
-			// item.flags, ready to add back to this join() if the corner marker earns its keep.
-			const flagsLabel = item.overlay ? '' : [
-				item.flags?.spacing ? 'S' : ''
-			].join('');
+			const kindAttr = item.overlay ? '' : ` data-kind="${item.kind}"`;
+			const attrsAttr = (!item.overlay && item.attrs && item.attrs.length > 0)
+				? ` data-attrs="${escapeHtml(JSON.stringify(item.attrs)).replace(/"/g, '&quot;')}"`
+				: '';
+			// Only spacing is marked for now — indicators/attributes still computed in item.flags.
+			// An arrow says where the spacing lands: ↑ before the item (SKIPB/SPACEB), ↓ after it
+			// (SPACEA/SKIPA), ↕ both.
+			const spacingBefore = item.spacing?.some(sp => sp.keyword.endsWith('B')) ?? false;
+			const spacingAfter = item.spacing?.some(sp => sp.keyword.endsWith('A')) ?? false;
+			const flagsLabel = item.overlay ? '' : (spacingBefore && spacingAfter ? '↕' : spacingBefore ? '↑' : spacingAfter ? '↓' : '');
 			const flagsAttr = flagsLabel ? ` data-flags="${flagsLabel}"` : '';
 			const styleAttr = item.color ? ` style="color:${item.color}"` : '';
 			const cssClass = [
@@ -1023,7 +1085,7 @@ function renderLineHtml(charLine: string, ownerLine: (number | undefined)[], sta
 				item.overlay ? 'pf-overlay' : '',
 				isStacked ? 'pf-stacked' : ''
 			].filter(Boolean).join(' ');
-			html += `<span class="${cssClass}"${lineAttr}${flowAttr}${stackAttr}${spacingAttr}${flagsAttr}${titleAttr}${styleAttr}>${segment}</span>`;
+			html += `<span class="${cssClass}"${lineAttr}${flowAttr}${stackAttr}${kindAttr}${spacingAttr}${attrsAttr}${flagsAttr}${titleAttr}${styleAttr}>${segment}</span>`;
 		} else {
 			html += segment;
 		};
@@ -1074,6 +1136,12 @@ export class RecordPreviewPanel {
 	 * re-render doesn't silently turn it back off; the actual scaling is computed client-side,
 	 * since it depends on live viewport/content pixel sizes. */
 	private fitToScreen = false;
+	/** Manual zoom (5–200%, multiples of 5) — the alternative to "Fit to Screen" when fitting leaves the page too
+	 * small. The two are mutually exclusive: moving the slider turns Fit off, and turning Fit on
+	 * turns zoom off. zoomPercent is remembered even while zoomActive is false, so the slider
+	 * keeps its last value. Tracked host-side purely so a full re-render doesn't reset it. */
+	private zoomActive = false;
+	private zoomPercent = 80;
 	/** "Indicators" toggle — a panel-wide preference like showRuler, persisting across switching
 	 * which record is previewed. */
 	private indicatorsEnabled = false;
@@ -1219,7 +1287,16 @@ export class RecordPreviewPanel {
 				break;
 			case 'toggleFitToScreen':
 				this.fitToScreen = !this.fitToScreen;
-				this.panel.webview.postMessage({ type: 'fitToScreenChanged', active: this.fitToScreen });
+				if (this.fitToScreen) {
+					this.zoomActive = false;
+				};
+				this.panel.webview.postMessage({ type: 'fitToScreenChanged', active: this.fitToScreen, zoomActive: this.zoomActive, zoomPercent: this.zoomPercent });
+				break;
+			case 'setZoom':
+				// No echo back: the webview already applied it locally (and turned Fit off itself).
+				this.zoomPercent = clampZoomPercent(message.percent, this.zoomPercent);
+				this.zoomActive = true;
+				this.fitToScreen = false;
 				break;
 			case 'openConfiguration':
 				// Guards the same rule the button's own disabled state already enforces: opening
@@ -1326,13 +1403,19 @@ export class RecordPreviewPanel {
 			case 'editRecordSpacing':
 				if (this.sequence.length === 0) {
 					const record = this.elements.find((el): el is PrtfRecord => el.kind === 'record' && el.name === this.recordName);
-					if (record) {await editRecordSpacing(record);};
+					if (record) {await editRecordSpacing(record, typeof message.keyword === 'string' ? message.keyword : undefined);};
+				};
+				break;
+			case 'editRecordAttributes':
+				if (this.sequence.length === 0) {
+					const record = this.elements.find((el): el is PrtfRecord => el.kind === 'record' && el.name === this.recordName);
+					if (record) {await editRecordAttributes(record, typeof message.kind === 'string' ? message.kind : undefined);};
 				};
 				break;
 			case 'editFileSpacing':
 				if (this.sequence.length === 0) {
 					const file = this.elements.find((el): el is PrtfFile => el.kind === 'file');
-					if (file) {await editFileSpacing(file);};
+					if (file) {await editFileSpacing(file, typeof message.keyword === 'string' ? message.keyword : undefined);};
 				};
 				break;
 			case 'deleteItem':
@@ -1341,9 +1424,25 @@ export class RecordPreviewPanel {
 					this.highlightLineIndex = undefined;
 				};
 				break;
+			case 'editItem':
+				if (this.sequence.length === 0) {
+					const itemLineIndex = typeof message.lineIndex === 'number' ? message.lineIndex : this.highlightLineIndex;
+					const target = this.elements.find(el => (el.kind === 'field' || el.kind === 'constant') && el.lineIndex === itemLineIndex);
+					if (target?.kind === 'field') {
+						await editField(target.lineIndex);
+					} else if (target?.kind === 'constant') {
+						await editConstantText(target);
+					};
+				};
+				break;
 			case 'editAttributes':
-				if (this.sequence.length === 0 && this.highlightLineIndex !== undefined) {
-					await editAttributes(this.highlightLineIndex);
+				if (this.sequence.length === 0) {
+					// Same convention as editSpacing: the row's own buttons send the item's lineIndex
+					// (and which keyword), the toolbar's "🎨 Attributes" button sends neither.
+					const attrLineIndex = typeof message.lineIndex === 'number' ? message.lineIndex : this.highlightLineIndex;
+					if (attrLineIndex !== undefined) {
+						await editAttributes(attrLineIndex, typeof message.kind === 'string' ? message.kind : undefined);
+					};
 				};
 				break;
 			case 'addConstantAt':
@@ -1424,7 +1523,8 @@ export class RecordPreviewPanel {
 		// selected"/width for a constant) — see buildSelectionLabel. Computed from `items` (this
 		// same render's own list) so it always agrees with whatever the page just resolved this
 		// item's row/col to, overlay offset and live indicator simulation included.
-		const initialSelectionLabel = buildSelectionLabel(items.find(it => it.lineIndex === this.highlightLineIndex && !it.overlay));
+		const initialSelectedItem = items.find(it => it.lineIndex === this.highlightLineIndex && !it.overlay);
+		const initialSelectionLabel = buildSelectionLabel(initialSelectedItem);
 
 		// AFPDS-only keywords (BOX, PAGSEG, BARCODE, ...) the preview can't draw — see
 		// findUnsupportedAfpdsKeywordsInRecord. Scoped to the single previewed record, same as the
@@ -1432,20 +1532,15 @@ export class RecordPreviewPanel {
 		// record to point the warning at there.
 		const unsupportedAfpdsKeywords = !composing ? findUnsupportedAfpdsKeywordsInRecord(this.elements, this.recordName) : [];
 
-		// Record- and file-level spacing badges (see field/constant's own corner 'S' marker) — shown
+		// Record- and file-level spacing badges (see field/constant's own corner spacing arrow) — shown
 		// only outside composition, where "the current record"/"the file" are still single,
 		// unambiguous things a click can act on (editRecordSpacing/editFileSpacing each take one
 		// specific record/file, not a composed chain of them).
 		const currentRecord = !composing ? records.find(r => r.name === this.recordName) : undefined;
-		const recordSpacingEntries = currentRecord ? readSpacingEntries(currentRecord.attributes, SPACING_KEYWORDS, liveIndicators) : [];
+		const recordSpacingEntries = currentRecord && getKeywordVisibility('record') ? readSpacingEntries(currentRecord.attributes, SPACING_KEYWORDS, liveIndicators) : [];
+		const recordAttributeEntries = currentRecord && getKeywordVisibility('record') ? readAttributeEntries(currentRecord.attributes, RECORD_ATTRIBUTE_KINDS, liveIndicators) : [];
 		const fileElement = !composing ? this.elements.find((el): el is PrtfFile => el.kind === 'file') : undefined;
-		const fileSpacingEntries = fileElement ? readSpacingEntries(fileElement.attributes, FILE_SPACING_KEYWORDS, liveIndicators) : [];
-		const spacingTitle = (label: string, entries: { keyword: string; value: number; active: boolean }[]) =>
-			`${label} spacing: ` + entries.map(e => `${e.keyword}(${e.value})${e.active ? '' : ' — not active'}`).join(', ') + ' — click to change';
-		// Same on/off convention as the selected item's own spacing row: blue while at least one of
-		// this scope's keywords is currently in effect (unconditioned ones always count), white once
-		// every one of them is conditioned off under the live indicator simulation.
-		const anySpacingActive = (entries: { active: boolean }[]) => entries.some(e => e.active);
+		const fileSpacingEntries = fileElement && getKeywordVisibility('file') ? readSpacingEntries(fileElement.attributes, FILE_SPACING_KEYWORDS, liveIndicators) : [];
 
 		// Record names for the "Compose sequence" rows' own selects (built client-side — see
 		// makeSequenceRow) — there's no standalone "which record" selector in the toolbar itself;
@@ -1521,8 +1616,23 @@ export class RecordPreviewPanel {
 		// (see .pf-record-spacing-badge). Once per record, not per page, since a composed sequence
 		// (where recordSpacingEntries is always empty — see its own computation above) is the only
 		// case with more than one.
-		const recordBadgeHtml = recordSpacingEntries.length > 0
-			? `<button type="button" id="recordSpacingBtn" class="spacing-item-btn pf-record-spacing-badge${anySpacingActive(recordSpacingEntries) ? ' active' : ''}" title="${escapeHtml(spacingTitle('Record', recordSpacingEntries))}">S</button>`
+		// Written out in full (SKIPB(1), HIGHLIGHT, ...) rather than a lone "S", stacked vertically
+		// with a rule between the spacing keywords and the other attributes when both exist.
+		// The file's own spacing goes in a row above the page; the record's own spacing and other
+		// attributes stack beside it, with a rule between the two groups when both exist.
+		const fileRowHtml = fileSpacingEntries.length > 0
+			? `<div class="pf-file-spacing-row"><span class="pf-scope-label">File keywords</span>${fileSpacingEntries.map(e =>
+				`<button type="button" class="spacing-item-btn${e.active ? ' active' : ''}" data-file-spacing="${e.keyword}" title="${escapeHtml(`File ${e.keyword}(${e.value})${e.active ? '' : ' — not active (indicator condition not met)'} — click to change`)}">${e.keyword}(${e.value})</button>`).join('')}</div>`
+			: '';
+		const gutterGroups = [
+			recordSpacingEntries.map(e =>
+				`<button type="button" class="spacing-item-btn${e.active ? ' active' : ''}" data-record-spacing="${e.keyword}" title="${escapeHtml(`Record ${e.keyword}(${e.value})${e.active ? '' : ' — not active (indicator condition not met)'} — click to change`)}">${e.keyword}(${e.value})</button>`),
+			recordAttributeEntries.map(e =>
+				`<button type="button" class="spacing-item-btn${e.active ? ' active' : ''}" data-record-attr="${e.kind}" title="${escapeHtml(`Record ${e.title}${e.active ? '' : ' — not active (indicator condition not met)'} — click to change`)}">${escapeHtml(e.label)}</button>`)
+		].filter(group => group.length > 0);
+		const recordButtonsHtml = gutterGroups.map(group => group.join('')).join('<hr class="pf-gutter-sep">');
+		const recordBadgeHtml = recordButtonsHtml
+			? `<div class="pf-record-spacing-badge"><span class="pf-scope-label">Record keywords</span>${recordButtonsHtml}</div>`
 			: '';
 
 		return /* html */ `<!DOCTYPE html>
@@ -1593,6 +1703,9 @@ export class RecordPreviewPanel {
 		gap: 4px;
 		font-size: 12px;
 		color: #000000;
+	}
+	.toolbar-row input#zoomInput {
+		width: 4.5em;
 	}
 	#sizeLabel {
 		font-weight: 600;
@@ -1706,18 +1819,38 @@ export class RecordPreviewPanel {
 		min-height: 0;
 		padding: 16px;
 		overflow: auto;
+		/* Darker than the white sheet, so the page itself stands out from what's around it. */
+		background: #cfd3d9;
 	}
 	/* The record-level spacing badge's gutter sits beside the page, in a row exactly as tall as the
 	   page itself (see .page-wrapper's own comment on why this can't be .page-wrapper directly). */
 	.pf-page-flex-row {
-		display: flex;
+		display: grid;
+		/* Both columns sized to their content and packed to the left: an "auto" track would soak up
+		   the free space left over when zooming out, stretching the record's buttons with it. */
+		grid-template-columns: max-content max-content;
+		justify-content: start;
+	}
+	/* Second column, first row: starts exactly where the page's own left edge does (the gutter
+	   beside the page occupies the first column, on the next row). */
+	.pf-file-spacing-row {
+		grid-column: 2;
+		grid-row: 1;
+	}
+	.pf-record-spacing-gutter {
+		grid-column: 1;
+		grid-row: 2;
+	}
+	#pageScaleBox {
+		grid-column: 2;
+		grid-row: 2;
+		justify-self: start;
 	}
 	/* Just wide enough for the "S" badge — stretches to the same height as its tall sibling
 	   (#pageScaleBox, by default flex align-items: stretch) purely so the badge's own sticky
 	   positioning below has that whole height to stay pinned within as the page scrolls. */
 	.pf-record-spacing-gutter {
 		flex-shrink: 0;
-		width: 24px;
 		margin-right: 8px;
 	}
 	.page {
@@ -1732,6 +1865,12 @@ export class RecordPreviewPanel {
 		white-space: pre;
 		line-height: 1.35;
 		padding: 4px 0;
+	}
+	/* Natural size must not depend on #pageScaleBox: that box is resized to the *scaled*
+	   dimensions, and a plain block #page would shrink along with it — the next scale calculation
+	   would then start from the already-shrunk width, so zooming back in got stuck. */
+	#page {
+		width: max-content;
 	}
 	.pf-page-group {
 		margin-bottom: 24px;
@@ -1793,17 +1932,22 @@ export class RecordPreviewPanel {
 	   lines are packed) so it never needs its own row. Letters, not a filled badge, so it doesn't
 	   obscure the O/6 placeholder text it sits on top of. */
 	.pf-item[data-flags]::after {
+		display: none;
 		content: attr(data-flags);
 		position: absolute;
 		right: 0;
 		bottom: 0;
 		font-family: sans-serif;
-		font-size: 9px;
+		font-size: 10px;
 		font-weight: bold;
 		line-height: 1;
-		letter-spacing: 0.5px;
 		color: #337aff;
 		pointer-events: none;
+	}
+	/* Hover-only by default; the Configuration panel's "always show" option adds .pf-marker-always. */
+	.pf-item[data-flags]:hover::after,
+	#page.pf-marker-always .pf-item[data-flags]::after {
+		display: block;
 	}
 	.pf-underline {
 		text-decoration: underline;
@@ -1881,7 +2025,7 @@ export class RecordPreviewPanel {
 		color: #ffffff;
 		border-color: #337aff;
 	}
-	/* The current record's own spacing badge — same 'S' language as a field/constant's own corner
+	/* The current record's own spacing badge — counterpart of a field/constant's own corner
 	   marker, just at page scale and clickable (a record isn't one grid cell, so it has no natural
 	   in-page spot the way a field/constant does). Sticky, not the page's own top-left corner:
 	   pinned near the top of .page-wrapper's visible scroll area (its own gutter is tall enough —
@@ -1892,6 +2036,50 @@ export class RecordPreviewPanel {
 		position: sticky;
 		top: 8px;
 		z-index: 10;
+		display: flex;
+		flex-direction: column;
+		align-items: stretch;
+		gap: 4px;
+	}
+	.pf-record-spacing-badge .spacing-item-btn {
+		text-align: left;
+		white-space: nowrap;
+	}
+	/* Names the level a group of keyword buttons belongs to (File/Record/Field/Constant keywords),
+	   the same split RLU's own keyword screens use. */
+	.pf-scope-label {
+		font-family: sans-serif;
+		font-size: 11px;
+		color: #333333;
+		white-space: nowrap;
+	}
+	.pf-file-spacing-row {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 6px;
+		margin-bottom: 8px;
+	}
+	.pf-gutter-sep {
+		width: 100%;
+		margin: 2px 0;
+		border: none;
+		border-top: 1px solid #999;
+	}
+	#spacingList {
+		display: inline-flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 6px;
+	}
+	/* Vertical bar between a selected item's spacing buttons and its other attributes. */
+	.spacing-row-sep {
+		display: inline-block;
+		width: 1px;
+		height: 16px;
+		margin: 0 2px;
+		vertical-align: middle;
+		background: #999;
 	}
 </style>
 </head>
@@ -1901,8 +2089,8 @@ export class RecordPreviewPanel {
 		<div id="toolbarRow1" class="toolbar-row">
 			<button id="focusModeBtn" class="${this.focusModeActive ? 'active' : ''}" title="Hide the source code editor to focus on the preview (tree view stays visible)">${this.focusModeActive ? '🗗 Show code' : '🗖 Focus'}</button>
 			<button id="fitScreenBtn" class="${this.fitToScreen ? 'active' : ''}" title="Scale the whole page to fit the visible area, so nothing is hidden below the fold">🔍 Fit to Screen</button>
+			<label title="Zoom the page (5%–200%, in steps of 5). Turns Fit to Screen off.">🔎 Zoom<input id="zoomInput" type="number" min="5" max="200" step="5" value="${this.zoomPercent}">%</label>
 			<button id="configBtn" ${this.focusModeActive ? 'disabled' : ''} title="Configure the preview (decimal format, date separator)">⚙ Configuration</button>
-			${fileSpacingEntries.length > 0 ? `<button type="button" id="fileSpacingBtn" class="spacing-item-btn${anySpacingActive(fileSpacingEntries) ? ' active' : ''}" title="${escapeHtml(spacingTitle('File', fileSpacingEntries))}">📄 S</button>` : ''}
 		</div>
 		<div id="toolbarRow2" class="toolbar-row">
 			<span id="sizeLabel">Size:</span>
@@ -1929,6 +2117,7 @@ export class RecordPreviewPanel {
 			<button id="addFieldBtn" title="Click, then click a point on the page to place a new field there">+ Field</button>
 			<button id="addConstantBtn" title="Click, then click a point on the page to place a new constant there">+ Constant</button>
 			<button id="rulerBtn" class="${this.showRuler ? 'active' : ''}" title="Show row numbers and a column ruler (every 5 columns) alongside the page">📏 Ruler</button>
+			<button id="editItemBtn" ${initialSelectedItem ? '' : 'disabled'} title="Click a field/constant on the page first, then this to edit it — a field's name, type and size, or a constant's text">${initialSelectedItem?.kind === 'constant' ? '✏️ Edit Text' : initialSelectedItem?.kind === 'field' ? '✏️ Edit Field' : '✏️ Edit'}</button>
 			<button id="deleteItemBtn" ${this.highlightLineIndex === undefined ? 'disabled' : ''} title="Click a field/constant on the page first, then this to delete it entirely">🗑 Delete</button>
 			<button id="attributesBtn" ${this.highlightLineIndex === undefined ? 'disabled' : ''} title="Click a field/constant on the page first, then this to set TEXT/COLOR/HIGHLIGHT/UNDERLINE/EDTCDE">🎨 Attributes</button>
 			<button id="spacingBtn" ${this.highlightLineIndex === undefined ? 'disabled' : ''} title="Click a field/constant on the page first, then this to set/clear its SKIPB/SPACEB/SPACEA/SKIPA">↕️ Spacing</button>
@@ -1952,9 +2141,10 @@ export class RecordPreviewPanel {
 	</div>
 	<div class="page-wrapper">
 		<div class="pf-page-flex-row">
+			${fileRowHtml}
 			${recordBadgeHtml ? `<div class="pf-record-spacing-gutter">${recordBadgeHtml}</div>` : ''}
 			<div id="pageScaleBox">
-				<div id="page" class="${this.showRuler ? 'pf-ruler-on' : ''}">${pagesHtml}</div>
+				<div id="page" class="${[this.showRuler ? 'pf-ruler-on' : '', getSpacingMarkerAlwaysVisible() ? 'pf-marker-always' : ''].filter(Boolean).join(' ')}">${pagesHtml}</div>
 			</div>
 		</div>
 	</div>
@@ -1968,6 +2158,24 @@ export class RecordPreviewPanel {
 		});
 		document.getElementById('fitScreenBtn').addEventListener('click', () => {
 			vscode.postMessage({ type: 'toggleFitToScreen' });
+		});
+		// 'change' (Enter, blur, or the spinner arrows) rather than 'input', so typing "8" on the
+		// way to "80" doesn't rescale the page at every keystroke.
+		const zoomInput = document.getElementById('zoomInput');
+		zoomInput.addEventListener('change', () => {
+			const typed = Number(zoomInput.value);
+			// Anything invalid (empty, non-numeric) reverts to the last good value; otherwise snap
+			// to the nearest multiple of 5 within 5–200.
+			const percent = zoomInput.value.trim() === '' || !Number.isFinite(typed)
+				? zoomPercent
+				: Math.max(5, Math.min(200, Math.round(typed / 5) * 5));
+			zoomInput.value = percent;
+			fitToScreenActive = false;
+			zoomActive = true;
+			zoomPercent = percent;
+			document.getElementById('fitScreenBtn').classList.remove('active');
+			applyFitToScreen();
+			vscode.postMessage({ type: 'setZoom', percent });
 		});
 		document.getElementById('configBtn').addEventListener('click', () => {
 			vscode.postMessage({ type: 'openConfiguration' });
@@ -2002,6 +2210,7 @@ export class RecordPreviewPanel {
 
 		const addConstantBtn = document.getElementById('addConstantBtn');
 		const addFieldBtn = document.getElementById('addFieldBtn');
+		const editItemBtn = document.getElementById('editItemBtn');
 		const deleteItemBtn = document.getElementById('deleteItemBtn');
 		const attributesBtn = document.getElementById('attributesBtn');
 		const spacingBtn = document.getElementById('spacingBtn');
@@ -2010,15 +2219,28 @@ export class RecordPreviewPanel {
 		let currentHighlightLine = ${JSON.stringify(this.highlightLineIndex ?? null)};
 		function refreshSelectionButtonsState() {
 			const disabled = composeToggle.checked || currentHighlightLine === null || currentHighlightLine === undefined;
+			editItemBtn.disabled = disabled;
 			deleteItemBtn.disabled = disabled;
 			attributesBtn.disabled = disabled;
 			spacingBtn.disabled = disabled;
+			// A field is edited as a whole (name/type/size), a constant by its text.
+			const selectedEl = disabled ? null : document.querySelector('[data-line="' + currentHighlightLine + '"]');
+			const selectedKind = selectedEl ? selectedEl.dataset.kind : undefined;
+			editItemBtn.textContent = selectedKind === 'constant' ? '✏️ Edit Text' : selectedKind === 'field' ? '✏️ Edit Field' : '✏️ Edit';
 		};
+		editItemBtn.addEventListener('click', () => vscode.postMessage({ type: 'editItem' }));
 		deleteItemBtn.addEventListener('click', () => vscode.postMessage({ type: 'deleteItem' }));
 		attributesBtn.addEventListener('click', () => vscode.postMessage({ type: 'editAttributes' }));
 		spacingBtn.addEventListener('click', () => vscode.postMessage({ type: 'editSpacing' }));
-		document.getElementById('recordSpacingBtn')?.addEventListener('click', () => vscode.postMessage({ type: 'editRecordSpacing' }));
-		document.getElementById('fileSpacingBtn')?.addEventListener('click', () => vscode.postMessage({ type: 'editFileSpacing' }));
+		document.querySelectorAll('[data-record-spacing]').forEach(btn => {
+			btn.addEventListener('click', () => vscode.postMessage({ type: 'editRecordSpacing', keyword: btn.dataset.recordSpacing }));
+		});
+		document.querySelectorAll('[data-record-attr]').forEach(btn => {
+			btn.addEventListener('click', () => vscode.postMessage({ type: 'editRecordAttributes', kind: btn.dataset.recordAttr }));
+		});
+		document.querySelectorAll('[data-file-spacing]').forEach(btn => {
+			btn.addEventListener('click', () => vscode.postMessage({ type: 'editFileSpacing', keyword: btn.dataset.fileSpacing }));
+		});
 
 		// "Compose sequence": combine several record formats (each with a repeat count) onto one
 		// page instead of previewing a single one — see collectComposedPageItems.
@@ -2303,17 +2525,28 @@ export class RecordPreviewPanel {
 		const toolbarRowSpacing = document.getElementById('toolbarRowSpacing');
 		const spacingList = document.getElementById('spacingList');
 
+		const showFieldKeywords = ${JSON.stringify(getKeywordVisibility('field'))};
 		function renderSpacingRow(lineIndex) {
 			spacingList.innerHTML = '';
-			const el = lineIndex === null || lineIndex === undefined
-				? null
-				: document.querySelector('[data-line="' + lineIndex + '"][data-spacing]');
-			const entries = el ? (() => { try { return JSON.parse(el.dataset.spacing); } catch (e) { return null; }; })() : null;
-			if (!entries || !entries.length) {
+			if (!showFieldKeywords) {
 				toolbarRowSpacing.style.display = 'none';
 				return;
 			};
-			entries.forEach(entry => {
+			const el = lineIndex === null || lineIndex === undefined
+				? null
+				: document.querySelector('[data-line="' + lineIndex + '"]');
+			const parse = raw => { try { return JSON.parse(raw); } catch (e) { return null; }; };
+			const spacingEntries = (el && el.dataset.spacing && parse(el.dataset.spacing)) || [];
+			const attrEntries = (el && el.dataset.attrs && parse(el.dataset.attrs)) || [];
+			if (!spacingEntries.length && !attrEntries.length) {
+				toolbarRowSpacing.style.display = 'none';
+				return;
+			};
+			const scopeLabel = document.createElement('span');
+			scopeLabel.className = 'pf-scope-label';
+			scopeLabel.textContent = 'Field keywords';
+			spacingList.appendChild(scopeLabel);
+			spacingEntries.forEach(entry => {
 				const btn = document.createElement('button');
 				btn.type = 'button';
 				btn.className = 'spacing-item-btn' + (entry.active ? ' active' : '');
@@ -2324,10 +2557,28 @@ export class RecordPreviewPanel {
 				});
 				spacingList.appendChild(btn);
 			});
+			if (spacingEntries.length && attrEntries.length) {
+				const sep = document.createElement('span');
+				sep.className = 'spacing-row-sep';
+				spacingList.appendChild(sep);
+			};
+			attrEntries.forEach(entry => {
+				const btn = document.createElement('button');
+				btn.type = 'button';
+				btn.className = 'spacing-item-btn' + (entry.active ? ' active' : '');
+				btn.textContent = entry.label;
+				btn.title = entry.title + (entry.active ? '' : ' — not active (indicator condition not met)') + ' — click to change';
+				btn.addEventListener('click', () => {
+					vscode.postMessage({ type: 'editAttributes', lineIndex, kind: entry.kind });
+				});
+				spacingList.appendChild(btn);
+			});
 			toolbarRowSpacing.style.display = '';
 		};
 
 		let fitToScreenActive = ${JSON.stringify(this.fitToScreen)};
+		let zoomActive = ${JSON.stringify(this.zoomActive)};
+		let zoomPercent = ${JSON.stringify(this.zoomPercent)};
 		const pageScaleBox = document.getElementById('pageScaleBox');
 
 		// Scales #page (a fixed-size monospace grid — PAGE_ROWS/PAGE_COLS only change via the
@@ -2338,7 +2589,7 @@ export class RecordPreviewPanel {
 		// math elsewhere (measure()) re-reads live getBoundingClientRect() at interaction time, so
 		// it stays correct at any scale without needing its own adjustment.
 		function applyFitToScreen() {
-			if (!fitToScreenActive) {
+			if (!fitToScreenActive && !zoomActive) {
 				page.style.transform = '';
 				pageScaleBox.style.width = '';
 				pageScaleBox.style.height = '';
@@ -2347,6 +2598,14 @@ export class RecordPreviewPanel {
 			const naturalWidth = page.offsetWidth;
 			const naturalHeight = page.offsetHeight;
 			if (!naturalWidth || !naturalHeight) {return;};
+			if (zoomActive && !fitToScreenActive) {
+				const zoomScale = zoomPercent / 100;
+				page.style.transformOrigin = 'top left';
+				page.style.transform = 'scale(' + zoomScale + ')';
+				pageScaleBox.style.width = (naturalWidth * zoomScale) + 'px';
+				pageScaleBox.style.height = (naturalHeight * zoomScale) + 'px';
+				return;
+			};
 			const toolbarHeight = document.getElementById('toolbarContainer').getBoundingClientRect().height;
 			const wrapperPadding = 32; // .page-wrapper's own 16px padding, both sides
 			const availWidth = window.innerWidth - wrapperPadding;
@@ -2398,6 +2657,9 @@ export class RecordPreviewPanel {
 			};
 			if (event.data.type === 'fitToScreenChanged') {
 				fitToScreenActive = event.data.active;
+				zoomActive = event.data.zoomActive;
+				zoomPercent = event.data.zoomPercent;
+				zoomInput.value = zoomPercent;
 				document.getElementById('fitScreenBtn').classList.toggle('active', fitToScreenActive);
 				applyFitToScreen();
 			};
@@ -2422,4 +2684,11 @@ function clampPageSize(value: unknown, fallback: number): number {
 	const n = Number(value);
 	if (!Number.isFinite(n) || n < 1) {return fallback;}
 	return Math.min(Math.floor(n), 255);
+};
+
+/** Snaps a requested zoom to a multiple of 5 within 5–200; anything unusable keeps the fallback. */
+function clampZoomPercent(value: unknown, fallback: number): number {
+	const n = Number(value);
+	if (!Number.isFinite(n)) {return fallback;}
+	return Math.max(5, Math.min(200, Math.round(n / 5) * 5));
 };
