@@ -6,7 +6,7 @@
 
 import * as vscode from 'vscode';
 import { ExtensionState } from '../prtf-edit.states/state';
-import { resolveFlowModeMove } from '../prtf-edit.parser/prtf-edit.parser';
+import { resolveFlowModeMove, FlowInsertionPlan } from '../prtf-edit.parser/prtf-edit.parser';
 import { PrtfAttribute } from '../prtf-edit.model/prtf-edit.model';
 import { deletableLineRange } from '../prtf-edit.utils/prtf-edit.edit-helpers';
 
@@ -119,6 +119,57 @@ async function applyFlowMove(
 			const insertPosition = document.lineAt(anchorLineIndex).range.end;
 			const spaceBLine = ' '.repeat(5) + 'A' + ' '.repeat(38) + `SPACEB(${newSpaceB})`;
 			edit.insert(document.uri, insertPosition, '\n' + spaceBLine);
+		};
+	};
+
+	return vscode.workspace.applyEdit(edit);
+};
+
+/**
+ * Inserts the source lines of a new flow-mode field/constant at the spot resolveFlowModeInsertionAt
+ * picked: right before `plan.nextItem`, or at the end of the record when there is none. When the
+ * new item's own SPACEB pushes the running line forward, `nextItem`'s own SPACEB gives the same
+ * amount back (removing it, and its keyword-only line if that leaves it empty), so nextItem and
+ * everything after it keep their rows.
+ */
+export async function insertFlowItem(
+	document: vscode.TextDocument,
+	record: { endIndex?: number; lineIndex: number },
+	plan: FlowInsertionPlan,
+	newLines: string[]
+): Promise<boolean> {
+	const edit = new vscode.WorkspaceEdit();
+	const next = plan.nextItem;
+
+	if (!next) {
+		const insertPosition = document.lineAt(record.endIndex ?? record.lineIndex).range.end;
+		edit.insert(document.uri, insertPosition, '\n' + newLines.join('\n'));
+		return vscode.workspace.applyEdit(edit);
+	};
+
+	const block = newLines.join('\n') + '\n';
+	const spaceBAttr = (next.attributes ?? []).find(attr => SPACEB_PATTERN.test(attr.value));
+
+	if (!spaceBAttr || plan.compensation === 0) {
+		edit.insert(document.uri, new vscode.Position(next.lineIndex, 0), block);
+		return vscode.workspace.applyEdit(edit);
+	};
+
+	const current = Number(spaceBAttr.value.match(/SPACEB\(\s*(\d+)\s*\)/i)?.[1] ?? 0);
+	const newValue = Math.max(0, current - plan.compensation);
+
+	if (spaceBAttr.lineIndex === next.lineIndex) {
+		// SPACEB inline on nextItem's own line — one replace, so it can't overlap the insertion.
+		const line = document.lineAt(next.lineIndex);
+		edit.replace(document.uri, line.range, block + applySpaceBToLine(line.text, newValue));
+	} else {
+		edit.insert(document.uri, new vscode.Position(next.lineIndex, 0), block);
+		const spaceBLine = document.lineAt(spaceBAttr.lineIndex);
+		const updatedText = applySpaceBToLine(spaceBLine.text, newValue);
+		if (newValue === 0 && isEmptyKeywordOnlyLine(updatedText)) {
+			edit.delete(document.uri, deletableLineRange(document, spaceBAttr.lineIndex, spaceBAttr.lineIndex));
+		} else {
+			edit.replace(document.uri, spaceBLine.range, updatedText);
 		};
 	};
 

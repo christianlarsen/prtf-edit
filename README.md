@@ -90,23 +90,8 @@ This extension is under active development — some DDS keywords aren't supporte
 See the full changelog [here](./CHANGELOG.md).
 
 ### Latest
-**0.5.1** - 2026-09-20
-- Double-clicking an overlaid record in the preview now switches to it, with the record you were on becoming the overlay — without losing your place on the page.
-- Fixed a sideways drag of a flow-positioned field with an "Overlay" active swapping it with the field before it, in records that start with an absolute `SKIPB`.
-- The preview now keeps its scroll position after each edit instead of jumping back to the top.
-- The Zoom box now starts at 100, matching the size the page is actually shown at.
-
-### Previous
-**0.5.0** - 2026-09-20
-- Added a **Zoom** box next to "Fit to Screen" in the preview toolbar: type a percentage from 5 to 200 (in steps of 5) to scale the page by hand.
-- Selecting a field or constant now shows its other attributes (`COLOR`, `HIGHLIGHT`, `UNDERLINE`, `EDTCDE`, `FONT`, `CHRID`, `TEXT`) as clickable buttons next to its spacing, and the record's own spacing and attributes appear in full beside the page instead of a lone "S". The file's `SKIPB`/`SKIPA` show in full above the page instead of the "📄 S" toolbar button. Removing a flag keyword by clicking its button now asks for confirmation.
-- Fields and constants with spacing are now marked with an arrow (`↑` before, `↓` after, `↕` both) instead of an "S", shown on hover by default — the Configuration panel has a new "Always show the spacing indicator" option to keep it visible.
-- Keyword groups are now labelled by level ("File keywords", "Record keywords", "Field keywords"), and the Configuration panel can show or hide each level.
-- Added an **"✏️ Edit Field" / "✏️ Edit Text"** button to the preview toolbar: edit a field's name, type and size from one menu, or a constant's text. "Edit Field..." is also in a field's tree menu.
-- `EDTWRD` (edit word) can now be set on a numeric field from the attributes picker or its own button.
-- The area around the page is now a darker gray, so the white sheet stands out.
-- Fixed the record's buttons beside the page growing wider as the zoom went down.
-- Fixed "Fit to Screen" shrinking the page's own measured size along with its container, which could make scaling back up get stuck.
+**0.5.2** - 2026-09-21
+- Fixed adding a field or constant to a flow-positioned record (`SPACEB`/`SPACEA`, no explicit Line): it always went to the end of the record, so a row above the last printed one put it on the last row. It is now inserted at the right place in the source, and the rest of the record keeps its rows.
 
 ---
 
