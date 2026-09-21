@@ -759,6 +759,10 @@ export interface FlowSimulationResult {
     /** The running "current line" after this record's own trailing SPACEA/SKIPA — the starting
      * point for whatever comes next (the next repetition, or the next record in a sequence). */
     endLine: number;
+    /** The running "current line" after the last item's own SPACEA/SKIPA but *before* the record's
+     * trailing SPACEA/SKIPA — the baseline a new item appended at the end of the record would
+     * count its own SPACEB forward from. */
+    lineAfterItems: number;
 };
 
 /**
@@ -814,10 +818,11 @@ export function simulateRecordFlow(
     // next line for its next repetition. Irrelevant to `rows` (nothing left in this instance to
     // resolve), only to `endLine`, which is why resolveFlowModePositions below never needed it —
     // there's no "next" to feed when a record is parsed/previewed in isolation.
+    const lineAfterItems = currentLine;
     currentLine = applySkipSpaceAfter(record.attributes, currentLine, isAttributeActive);
     currentLine = applySkipSpaceAfter(fileAttributes, currentLine, isAttributeActive);
 
-    return { rows, baselineBefore, endLine: currentLine };
+    return { rows, baselineBefore, endLine: currentLine, lineAfterItems };
 };
 
 /**
@@ -899,6 +904,53 @@ export function resolveFlowModeInsertion(elements: PrtfElement[], recordName: st
     const { rows } = simulateRecordFlow(record, items, 0, undefined, fileAttributes);
     const lastItem = items[items.length - 1];
     return { isFlowMode: true, lastItemRow: rows.get(lastItem.lineIndex) ?? 1 };
+};
+
+export interface FlowInsertionPlan {
+    /** False when the record isn't fully flow-positioned — the caller writes an explicit Line. */
+    isFlowMode: boolean;
+    /** SPACEB(n) the new item needs, counted from the running line where it lands in source order. */
+    spaceBefore: number;
+    /** The first existing item that prints on a later row than the target: the new item must be
+     * inserted right before it in source order (flow order *is* source order). Undefined means
+     * the new item goes last, at the end of the record. */
+    nextItem?: PrtfField | PrtfConstant;
+    /** The row-shift the new item's own SPACEB introduces ahead of `nextItem`, which that item's
+     * own SPACEB must give back so it (and everything after it) stays on the same row. Zero when
+     * nothing needs compensating. */
+    compensation: number;
+};
+
+/**
+ * Works out where in a flow-mode record a new item targeting `targetRow` must be inserted in
+ * source order, and what SPACEB it and its follower need. Appending at the end (what a plain
+ * "count from the last item" does) is only right for a target at or below the last printed row;
+ * for anything above, the item would print on the last row instead.
+ *
+ * The new item goes after the last item whose row is <= targetRow (position within a row is
+ * independent of source order, so any spot on that row works) and before the first one printing
+ * lower. Its SPACEB counts from the running line coming into that spot; since that now advances
+ * the running line for `nextItem`, `nextItem`'s own SPACEB is reduced by the same amount.
+ */
+export function resolveFlowModeInsertionAt(elements: PrtfElement[], recordName: string, targetRow: number): FlowInsertionPlan {
+    const info = resolveFlowModeInsertion(elements, recordName);
+    if (!info.isFlowMode) {return { isFlowMode: false, spaceBefore: 0, compensation: 0 };};
+
+    const record = elements.find((el): el is PrtfRecord => el.kind === 'record' && el.name === recordName)!;
+    const items = elements
+        .filter((el): el is PrtfField | PrtfConstant =>
+            (el.kind === 'field' || el.kind === 'constant') && el.recordname === recordName)
+        .sort((a, b) => a.lineIndex - b.lineIndex);
+    const fileAttributes = elements.find((el): el is PrtfFile => el.kind === 'file')?.attributes;
+
+    const { rows, baselineBefore, lineAfterItems } = simulateRecordFlow(record, items, 0, undefined, fileAttributes);
+    const nextItem = items.find(item => (rows.get(item.lineIndex) ?? 0) > targetRow);
+    const baseline = nextItem ? (baselineBefore.get(nextItem.lineIndex) ?? 0) : lineAfterItems;
+
+    const spaceBefore = Math.max(0, targetRow - baseline);
+    // A follower with its own SKIPB jumps absolutely, so it doesn't inherit the shift.
+    const followerIsRelative = nextItem !== undefined && !(nextItem.attributes ?? []).some(attr => /\bSKIPB\(/i.test(attr.value));
+    return { isFlowMode: true, spaceBefore, nextItem, compensation: followerIsRelative ? spaceBefore : 0 };
 };
 
 export interface FlowModeMoveInfo {

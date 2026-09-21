@@ -6,7 +6,8 @@
 
 import * as vscode from 'vscode';
 import { ExtensionState } from '../prtf-edit.states/state';
-import { resolveFlowModeInsertion } from '../prtf-edit.parser/prtf-edit.parser';
+import { resolveFlowModeInsertionAt } from '../prtf-edit.parser/prtf-edit.parser';
+import { insertFlowItem } from './prtf-edit.move-element';
 
 /** Field types offered by the quick-add flow — the v1 keyword scope (see README): character,
  * zoned decimal, date, time, timestamp. Floating point (F) and DBCS/UTF-16 (O/G) are left for a
@@ -169,18 +170,19 @@ export async function addFieldAt(recordName: string, row: number, col: number, m
 	const clampedRow = Math.min(Math.min(255, maxRow), Math.max(1, Math.round(row)));
 	const clampedCol = Math.min(Math.min(255, maxCol), Math.max(1, Math.round(col)));
 
-	const flowInfo = resolveFlowModeInsertion(ExtensionState.lastPrtfElements, recordName);
-	const newLines = flowInfo.isFlowMode
-		? buildFieldLine(name, type, length, decimals, undefined, clampedCol, Math.max(0, clampedRow - (flowInfo.lastItemRow ?? 1)))
+	const plan = resolveFlowModeInsertionAt(ExtensionState.lastPrtfElements, recordName, clampedRow);
+	const newLines = plan.isFlowMode
+		? buildFieldLine(name, type, length, decimals, undefined, clampedCol, plan.spaceBefore)
 		: buildFieldLine(name, type, length, decimals, clampedRow, clampedCol);
 
-	const anchorLineIndex = record.endIndex ?? record.lineIndex;
-	const insertPosition = document.lineAt(anchorLineIndex).range.end;
-
-	const edit = new vscode.WorkspaceEdit();
-	edit.insert(document.uri, insertPosition, '\n' + newLines.join('\n'));
-
-	const applied = await vscode.workspace.applyEdit(edit);
+	let applied: boolean;
+	if (plan.isFlowMode) {
+		applied = await insertFlowItem(document, record, plan, newLines);
+	} else {
+		const edit = new vscode.WorkspaceEdit();
+		edit.insert(document.uri, document.lineAt(record.endIndex ?? record.lineIndex).range.end, '\n' + newLines.join('\n'));
+		applied = await vscode.workspace.applyEdit(edit);
+	};
 	if (applied) {
 		vscode.window.showInformationMessage(`PRTF: field '${name}' added.`);
 	} else {

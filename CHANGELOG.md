@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.5.2] - 2026-09-21
+
+### Fixed
+- Adding a field or constant in the preview to a flow-positioned record (one placed with `SPACEB`/`SPACEA` instead of an explicit Line) always put it at the end of the record, so any target row above the last printed row landed on that last row instead. It is now inserted in source order — after the last item on or above the chosen row, before the first one below — and gives back to the following item the `SPACEB` it consumes, so the rest of the record keeps its rows.
+
 ## [0.5.1] - 2026-09-20
 
 ### Added
