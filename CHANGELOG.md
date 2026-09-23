@@ -3,6 +3,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.5.3] - 2026-09-23
+
+### Fixed
+- The preview's record positioning folded the file's own `SKIPB`/`SKIPA` into every record format's layout — an *absolute* jump, so it silently reset the running position back to the same fixed line regardless of where a chained record, a composed sequence, or an overlay tile actually started. This broke the overlay's "🔁 Repeat" toggle in a file with a file-level `SKIPB`: every repeated tile re-simulated to that same fixed line as the first, so only one copy ever showed and Repeat appeared to do nothing. The preview no longer factors the file's own spacing into its layout math at all (it's still shown, and editable, as its own row of buttons above the page) — only a record's and its fields'/constants' own keywords drive where things land.
+- "🔁 Repeat" itself re-simulated the whole overlay record from a later starting line for each tile, which a *record*-level `SKIPB` (also an absolute jump) could reset the same way. It now simulates one occurrence just once and tiles that down the page by multiples of its own natural height instead.
+
 ## [0.5.2] - 2026-09-21
 
 ### Fixed
