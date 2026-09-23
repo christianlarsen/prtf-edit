@@ -782,9 +782,15 @@ function positionRecordEntry(
 	if (recordItems.every(item => item.positionSource !== 'explicit')) {
 		// A file-level SKIPB/SKIPA (the only two spacing keywords valid at that level) applies
 		// before/after *every* record format in the file, per IBM's DDS reference — not a one-time
-		// page-boundary event — so it belongs here, at the same layer as the record's own.
-		const fileAttributes = elements.find((el): el is PrtfFile => el.kind === 'file')?.attributes;
-		const { rows, endLine } = simulateRecordFlow(record, recordItems, startLine, isAttributeActive, fileAttributes);
+		// page-boundary event. Deliberately left out of the preview's own simulation, though: it's
+		// an *absolute* jump/reset, so folding it in here would reset every record format back to
+		// the same fixed line regardless of `startLine` — collapsing a composed sequence onto a
+		// single line, and defeating "Repeat"'s tiling (each tile re-simulates from a later
+		// startLine, which the file's own SKIPB would just override back to the same row every
+		// time, making every tile after the first identical to it). The preview's whole point is
+		// showing how a record's *own* fields/keywords lay out and chain together; the file's own
+		// SKIPB/SKIPA is shown separately, as its own row of buttons above the page.
+		const { rows, endLine } = simulateRecordFlow(record, recordItems, startLine, isAttributeActive);
 		for (const item of recordItems) {
 			const row = rows.get(item.lineIndex);
 			if (row === undefined) {continue;};
@@ -978,16 +984,24 @@ export function collectPageItemsWithOverlay(
 		// reference that's always nearby no matter where the active record ends up, rather than one
 		// occurrence chained relative to it (which was confusing: it effectively started wherever
 		// the active record's own content began/ended, not at a predictable spot).
-		overlayItems = [];
-		let tileStart = 0;
-		let previousStart = -1;
-		while (tileStart < pageRows && tileStart !== previousStart) {
-			previousStart = tileStart;
-			const tile = positionRecordEntry(elements, overlayRecord, tileStart, true, restingIndicators);
-			if (tile.items.length === 0 || tile.endLine <= tileStart) {break;};
-			overlayItems = [...overlayItems, ...tile.items];
-			tileStart = tile.endLine;
-		};
+		//
+		// The one occurrence is simulated just once, from row 1, and every later tile is that same
+		// template shifted down by a multiple of its own height — rather than re-simulating the
+		// record at each successive starting line, which a record-level SKIPB (an absolute jump,
+		// not a relative advance) would silently reset back to the same fixed row every time,
+		// making every "tile" after the first identical to it and stopping the loop after just one.
+		// Simulated from row 1, not 0: row 0 doesn't exist on a real page, and starting there
+		// trips simulateRecordFlow's own "line numbers bottom out at 1" clamp, which inflates the
+		// very first step by one — e.g. a record whose only spacing is its own trailing SPACEA(1)
+		// genuinely advances by 1 from any real (>=1) starting line, not 2.
+		const template = positionRecordEntry(elements, overlayRecord, 1, true, restingIndicators);
+		const step = template.endLine - 1;
+		overlayItems = template.items.length > 0 && step > 0
+			? Array.from(
+				{ length: Math.ceil(pageRows / step) },
+				(_, tileIndex) => template.items.map(item => ({ ...item, row: item.row + tileIndex * step }))
+			  ).flat()
+			: [];
 	} else {
 		overlayItems = activeIsFirst ? secondResult.items : firstResult.items;
 	};

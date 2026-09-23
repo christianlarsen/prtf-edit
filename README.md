@@ -90,8 +90,8 @@ This extension is under active development — some DDS keywords aren't supporte
 See the full changelog [here](./CHANGELOG.md).
 
 ### Latest
-**0.5.2** - 2026-09-21
-- Fixed adding a field or constant to a flow-positioned record (`SPACEB`/`SPACEA`, no explicit Line): it always went to the end of the record, so a row above the last printed one put it on the last row. It is now inserted at the right place in the source, and the rest of the record keeps its rows.
+**0.5.3** - 2026-09-23
+- Fixed the overlay's "🔁 Repeat" toggle doing nothing (only one copy ever showed) in a file with a file-level `SKIPB`/`SKIPA` — the preview no longer folds the file's own spacing into a record's layout, only the record's and its fields'/constants' own keywords.
 
 ---
 
